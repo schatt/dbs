@@ -84,15 +84,17 @@ sub merge_args {
     
     # Detect calling pattern
     if (@args == 1 && ref($args[0]) eq 'ARRAY') {
-        # Old pattern: merge_args([$arg1, $arg2, ...])
-        return _merge_args_list(@{$args[0]});
-    } elsif (@args >= 1 && ref($args[0]) eq '') {
+        # Old pattern: merge_args([$arg1, $arg2, ...]) - COMMENTED OUT FOR REFACTORING
+        # return _merge_args_list(@{$args[0]});
+        die "Old pattern merge_args([...]) is deprecated. Use new pattern with command-based merging.";
+    } elsif (@args == 4 && ref($args[0]) eq '' && (ref($args[1]) eq 'HASH' || ref($args[1]) eq 'ARRAY' || !defined($args[1])) && (ref($args[2]) eq 'HASH' || !defined($args[2])) && ref($args[3]) eq 'HASH') {
         # New pattern: merge_args($command, $node_args, $parent_args, $global_vars)
         my ($command, $node_args, $parent_args, $global_vars) = @args;
         return _merge_args_with_command($command, $node_args, $parent_args, $global_vars);
     } else {
-        # Old pattern: merge_args($arg1, $arg2, ...)
-        return _merge_args_list(@args);
+        # Old pattern: merge_args($arg1, $arg2, ...) - COMMENTED OUT FOR REFACTORING
+        # return _merge_args_list(@args);
+        die "Old pattern merge_args(\$arg1, \$arg2, ...) is deprecated. Use new pattern with command-based merging.";
     }
 }
 
@@ -128,10 +130,18 @@ sub _merge_args_with_command {
     $global_vars ||= {};
     
     # Start with node arguments (highest priority)
-    my %merged = %$node_args;
+    my %merged = ();
+    if ($node_args && ref($node_args) eq 'HASH') {
+        %merged = %$node_args;
+    } elsif ($node_args && ref($node_args) eq 'ARRAY') {
+        # Convert array to hash if needed
+        %merged = map { $_ => 1 } @$node_args;
+    }
     
     # Merge in parent arguments (node args override parent args)
-    %merged = (%merged, %$parent_args);
+    if ($parent_args && ref($parent_args) eq 'HASH') {
+        %merged = (%merged, %$parent_args);
+    }
     
     # Extract only the globals that are referenced in the command
     my %needed_globals = _extract_needed_globals($command, $global_vars);

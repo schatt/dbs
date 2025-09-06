@@ -22,10 +22,19 @@ use Parallel::ForkManager;
 use Digest::SHA qw(sha1_hex);
 use List::Util qw(all min);
 use Scalar::Util qw(blessed);
-use lib 'Scripts';
+use Cwd qw(getcwd);
+use File::Spec;
+
+# Determine the caller's working directory (where the script is invoked from)
+# This ensures build directories are relative to the project using this script
+our $CALLER_CWD = getcwd();
+
+# Add the Scripts directory relative to this script's location, not the current working directory
+use FindBin;
+use lib "$FindBin::Bin";
 
 # All use statements at the top - proper Perl practice
-use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL handle_result_hash print_enhanced_tree build_graph_with_worklist print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order add_to_ready_queue add_to_groups_ready is_node_in_groups_ready get_eligible_pending_parent_nodes has_ready_nodes get_next_ready_node remove_from_ready_queue remove_from_groups_ready remove_from_ready_pending_parent get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes is_successful_completion_status);
+use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL handle_result_hash print_enhanced_tree print_node_tree build_graph_with_worklist print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order add_to_ready_queue add_to_groups_ready is_node_in_groups_ready get_eligible_pending_parent_nodes has_ready_nodes get_next_ready_node remove_from_ready_queue remove_from_groups_ready remove_from_ready_pending_parent get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes is_successful_completion_status);
 use BuildStatusManager;
 use BuildNode;
 use BuildNodeRegistry;
@@ -35,6 +44,17 @@ our $STATUS_MANAGER; # Global status manager instance
 
 # Initialize global status manager after all modules are loaded
 $STATUS_MANAGER = BuildStatusManager->new;
+
+# --- Make path relative to caller's working directory ---
+# WHAT: Converts relative paths to be relative to the caller's CWD instead of the script's location
+# HOW: Prepends $CALLER_CWD to relative paths, leaves absolute paths unchanged
+# WHY: Ensures build directories are created in the project using this script, not in the dbs directory
+# PUBLIC: This function is used internally to handle path resolution
+sub make_path_relative_to_caller {
+    my $path = shift;
+    return $path if File::Spec->file_name_is_absolute($path);
+    return File::Spec->catfile($CALLER_CWD, $path);
+}
 
 # --- Sanitize log file names ---
 # WHAT: Converts any string into a safe filename for log files
@@ -193,7 +213,7 @@ my $VALIDATE_NOTIFICATION_GRAPH = 0;
 sub init_build_session_dir {
     my $pid = $$;
     my $timestamp = strftime("%Y%m%d_%H%M%S", localtime);
-    $BUILD_SESSION_DIR = "build/logs/build_${timestamp}_${pid}";
+    $BUILD_SESSION_DIR = make_path_relative_to_caller("build/logs/build_${timestamp}_${pid}");
     make_path($BUILD_SESSION_DIR) unless -d $BUILD_SESSION_DIR;
     log_debug("Build session directory: $BUILD_SESSION_DIR");
     return $BUILD_SESSION_DIR;
@@ -392,6 +412,15 @@ sub load_config {
         die "Configuration file '$config_file' did not parse to a valid hash structure\n";
     }
 
+    # Make all artifact directories relative to the caller's CWD
+    if (exists $cfg->{platforms}) {
+        for my $platform (@{$cfg->{platforms}}) {
+            if (exists $platform->{artifact_dir}) {
+                $platform->{artifact_dir} = make_path_relative_to_caller($platform->{artifact_dir});
+            }
+        }
+    }
+
     # --- Enhance tasks and platforms to support 'notifies' ---
     for my $section (qw(tasks platforms)) {
         next unless exists $cfg->{$section};
@@ -441,7 +470,7 @@ my %actually_executed; # name => 1 if executed, 0 if skipped
 # INTERNAL: This is an internal utility function, not intended for direct use by build scripts
 sub get_log_dir {
     my ($node) = @_;
-    my $base = $BUILD_SESSION_DIR || "build/logs"; # Fallback to old behavior if session dir not initialized
+    my $base = $BUILD_SESSION_DIR || make_path_relative_to_caller("build/logs"); # Fallback to old behavior if session dir not initialized
     my $group = $node->parent_group;
     my $group_name = '';
     if (ref($group) && $group->can('name')) {
@@ -728,14 +757,17 @@ sub print_build_order_tree {
     my $group = $cfg->{build_groups}{$target};
         for my $tgt (@{$group->{targets} // []}) {
         my ($name, $args) = extract_target_info($tgt);
-        # Merge parent args with current args (current args take precedence)
-        my $merged_args = merge_args($parent_args, $args);
+        # Simple argument merging without using the old merge_args pattern
+        my %merged_args = %{ $parent_args // {} };
+        if ($args && ref $args eq 'HASH') {
+            %merged_args = (%merged_args, %$args);
+        }
         if (exists $cfg->{build_groups}{$name}) {
-            print_build_order_tree($cfg, $name, "$prefix  ", $seen, $merged_args);
+            print_build_order_tree($cfg, $name, "$prefix  ", $seen, \%merged_args);
         } else {
             print "$prefix  $name";
-            if (%$merged_args) {
-                print " [" . join(", ", map { "$_=$merged_args->{$_}" } sort keys %$merged_args) . "]";
+            if (%merged_args) {
+                print " [" . join(", ", map { "$_=$merged_args{$_}" } sort keys %merged_args) . "]";
             }
             print "\n";
         }
@@ -756,7 +788,7 @@ sub build_order_json {
     unless (exists $cfg->{build_groups}{$target}) {
         my $node = { name => $target };
         if ($parent_args && ref $parent_args eq 'HASH' && %$parent_args) {
-            $node->set_args({ %$parent_args });
+            $node->{args} = { %$parent_args };
         }
         return $node;
     }
@@ -766,8 +798,12 @@ sub build_order_json {
         ( ($parent_args && ref $parent_args eq 'HASH' && %$parent_args) ? (args => { %$parent_args }) : () ),
         children => [map {
             my ($name, $args) = extract_target_info($_);
-            my $merged_args = merge_args($parent_args, $args);
-            build_order_json($cfg, $name, $seen, $merged_args)
+            # Simple argument merging without using the old merge_args pattern
+            my %merged_args = %{ $parent_args // {} };
+            if ($args && ref $args eq 'HASH') {
+                %merged_args = (%merged_args, %$args);
+            }
+            build_order_json($cfg, $name, $seen, \%merged_args)
         } @{$group->{targets} // []}]
     };
 }
@@ -781,7 +817,7 @@ sub build_order_json {
 # INTERNAL: This is an internal function used by execute_platform_node, not intended for direct use
 sub collect_artifacts_for_platform {
     my ($platform, $config) = @_;
-    my $artifact_dir = $platform->{artifact_dir};
+    my $artifact_dir = make_path_relative_to_caller($platform->{artifact_dir});
     my $patterns = $platform->{artifact_patterns} // [];
     my $copied = 0;
     for my $pattern (@$patterns) {
@@ -794,7 +830,7 @@ sub collect_artifacts_for_platform {
         for my $file (@matches) {
             next unless -e $file;
             my $dest_dir = $artifact_dir;
-            mkdir $dest_dir unless -d $dest_dir;
+            make_path($dest_dir) unless -d $dest_dir;
             my $basename = $file;
             $basename =~ s{.*/}{};
             my $dest = "$dest_dir/$basename";
@@ -830,10 +866,10 @@ sub archive_artifacts_for_platform {
     $vars{build} //= '01';        # TODO: get real build
     my $archive_name = $archive_name_template;
     $archive_name =~ s/\{(\w+)\}/exists $vars{$1} ? $vars{$1} : ""/ge;
-    my $archives_dir = 'build/archives';
+    my $archives_dir = make_path_relative_to_caller('build/archives');
     make_path($archives_dir) unless -d $archives_dir;
     my $archive_path = "$archives_dir/$archive_name.$archive_format";
-    my $artifact_dir = $platform->{artifact_dir};
+    my $artifact_dir = make_path_relative_to_caller($platform->{artifact_dir});
     log_info("Archiving artifacts for $platform->{name} to $archive_path");
     my $cmd;
     if ($archive_format eq 'zip') {
@@ -884,7 +920,7 @@ sub cleanup_simple_retention {
     my ($platform, $config) = @_;
     my $days = $config->{artifacts}{retention}{simple}{days} // 14;
     my $cutoff = time() - ($days * 24 * 60 * 60);
-    my @dirs = ($platform->{artifact_dir}, 'build/archives');
+    my @dirs = (make_path_relative_to_caller($platform->{artifact_dir}), make_path_relative_to_caller('build/archives'));
     for my $dir (@dirs) {
         next unless -d $dir;
         find(sub {
@@ -907,7 +943,7 @@ sub cleanup_hierarchical_retention {
     my ($platform, $config) = @_;
     log_info("Cleaning up artifacts using hierarchical retention policy");
     my $intervals = $config->{artifacts}{retention}{hierarchical}{intervals} // [];
-    my @dirs = ($platform->{artifact_dir}, 'build/archives');
+    my @dirs = (make_path_relative_to_caller($platform->{artifact_dir}), make_path_relative_to_caller('build/archives'));
     for my $dir (@dirs) {
         next unless -d $dir;
         for my $int (@$intervals) {
@@ -940,7 +976,7 @@ sub cleanup_bucketed_retention {
     my ($platform, $config) = @_;
     log_info("Cleaning up artifacts using bucketed retention policy");
     my $buckets = $config->{artifacts}{retention}{bucketed}{buckets} // [];
-    my @dirs = ($platform->{artifact_dir}, 'build/archives');
+    my @dirs = (make_path_relative_to_caller($platform->{artifact_dir}), make_path_relative_to_caller('build/archives'));
     for my $dir (@dirs) {
         next unless -d $dir;
         for my $bucket (@$buckets) {
@@ -1005,6 +1041,84 @@ sub format_interval_key {
 # HOW: Scans tasks, platforms, and groups for duplicates, validates required fields, reports all errors
 # WHY: Catches configuration errors early to prevent build failures and ensure consistent configuration
 # PUBLIC: This function is part of the public API and can be used by build scripts for validation
+# --- Validate array fields for empty arrays ---
+# WHAT: Checks for empty array fields that should contain values
+# HOW: Validates notification fields, dependencies, and other array fields across all config sections
+# WHY: Prevents runtime errors from empty arrays that should contain data
+# PUBLIC: This function is used by validate_config, not intended for direct use
+sub validate_array_fields {
+    my ($cfg, $errors_ref) = @_;
+    
+    # Check notification fields in tasks
+    for my $task (@{$cfg->{tasks} // []}) {
+        my $name = $task->{name};
+        for my $notif_field (qw(notifies notifies_on_success notifies_on_failure)) {
+            if (exists $task->{$notif_field}) {
+                if (ref($task->{$notif_field}) eq 'ARRAY' && @{$task->{$notif_field}} == 0) {
+                    push @$errors_ref, "Task '$name' has empty $notif_field array - remove the field or add entries";
+                } elsif (ref($task->{$notif_field}) ne 'ARRAY' && ref($task->{$notif_field}) ne 'HASH') {
+                    push @$errors_ref, "Task '$name' has invalid $notif_field field - must be array or hash";
+                }
+            }
+        }
+    }
+    
+    # Check notification fields in platforms
+    for my $platform (@{$cfg->{platforms} // []}) {
+        my $name = $platform->{name};
+        for my $notif_field (qw(notifies notifies_on_success notifies_on_failure)) {
+            if (exists $platform->{$notif_field}) {
+                if (ref($platform->{$notif_field}) eq 'ARRAY' && @{$platform->{$notif_field}} == 0) {
+                    push @$errors_ref, "Platform '$name' has empty $notif_field array - remove the field or add entries";
+                } elsif (ref($platform->{$notif_field}) ne 'ARRAY' && ref($platform->{$notif_field}) ne 'HASH') {
+                    push @$errors_ref, "Platform '$name' has invalid $notif_field field - must be array or hash";
+                }
+            }
+        }
+    }
+    
+    # Check notification fields in build groups
+    for my $gname (keys %{$cfg->{build_groups} // {}}) {
+        my $group = $cfg->{build_groups}{$gname};
+        for my $notif_field (qw(notifies notifies_on_success notifies_on_failure)) {
+            if (exists $group->{$notif_field}) {
+                if (ref($group->{$notif_field}) eq 'ARRAY' && @{$group->{$notif_field}} == 0) {
+                    push @$errors_ref, "Build group '$gname' has empty $notif_field array - remove the field or add entries";
+                } elsif (ref($group->{$notif_field}) ne 'ARRAY' && ref($group->{$notif_field}) ne 'HASH') {
+                    push @$errors_ref, "Build group '$gname' has invalid $notif_field field - must be array or hash";
+                }
+            }
+        }
+    }
+    
+    # Check other array fields that should not be empty
+    for my $task (@{$cfg->{tasks} // []}) {
+        my $name = $task->{name};
+        for my $array_field (qw(dependencies requires_execution_of)) {
+            if (exists $task->{$array_field}) {
+                if (ref($task->{$array_field}) eq 'ARRAY' && @{$task->{$array_field}} == 0) {
+                    push @$errors_ref, "Task '$name' has empty $array_field array - remove the field or add entries";
+                } elsif (ref($task->{$array_field}) ne 'ARRAY') {
+                    push @$errors_ref, "Task '$name' has invalid $array_field field - must be array";
+                }
+            }
+        }
+    }
+    
+    for my $platform (@{$cfg->{platforms} // []}) {
+        my $name = $platform->{name};
+        for my $array_field (qw(dependencies requires_execution_of)) {
+            if (exists $platform->{$array_field}) {
+                if (ref($platform->{$array_field}) eq 'ARRAY' && @{$platform->{$array_field}} == 0) {
+                    push @$errors_ref, "Platform '$name' has empty $array_field array - remove the field or add entries";
+                } elsif (ref($platform->{$array_field}) ne 'ARRAY') {
+                    push @$errors_ref, "Platform '$name' has invalid $array_field field - must be array";
+                }
+            }
+        }
+    }
+}
+
 sub validate_config {
     my ($cfg) = @_;
     my %seen;
@@ -1046,6 +1160,10 @@ sub validate_config {
         push @errors, "Build group '$gname' missing required field: targets" unless defined $group->{targets};
         # Do not iterate or dereference targets here
     }
+    
+    # Enhanced validation: check for empty array fields
+    validate_array_fields($cfg, \@errors);
+    
     if (@errors) {
         log_error($_) for @errors;
         die "Config validation failed. See errors above.\n";
@@ -1309,8 +1427,12 @@ sub print_declared_order {
     my $group = $cfg->{build_groups}{$target};
     for my $tgt (@{$group->{targets} // []}) {
         my ($name, $args) = extract_target_info($tgt);
-        my $merged_args = merge_args($parent_args, $args);
-        print_declared_order($cfg, $name, "$prefix  ", $merged_args);
+        # Simple argument merging without using the old merge_args pattern
+        my %merged_args = %{ $parent_args // {} };
+        if ($args && ref $args eq 'HASH') {
+            %merged_args = (%merged_args, %$args);
+        }
+        print_declared_order($cfg, $name, "$prefix  ", \%merged_args);
     }
 }
 
@@ -2726,7 +2848,7 @@ sub print_build_summary {
     if ($BUILD_SESSION_DIR) {
         print "Build logs are available in: $BUILD_SESSION_DIR\n";
     } else {
-        print "Build logs are available in: build/logs\n";
+        print "Build logs are available in: " . make_path_relative_to_caller("build/logs") . "\n";
     }
     if ($quiet || $VERBOSITY_LEVEL == 0) {
         print "Command output was redirected to individual log files only (quiet mode).\n";
@@ -3176,11 +3298,9 @@ sub main {
     if ($print_build_order) {
         if ($VERBOSITY_LEVEL >= 1) {
             print "BUILD ORDER TREE\n================\n";
-            # Build trees for each group and print them
+            # Print build order trees for each group
             for my $group (sort keys %{$cfg->{build_groups} // {}}) {
-                my $global_defaults = extract_global_vars($cfg);
-                my ($registry, $tree) = build_tree_for_group($group, $cfg, $global_defaults);
-                print_tree($tree);
+                print_build_order_tree($cfg, $group);
             }
         }
         return 0;
@@ -3190,8 +3310,8 @@ sub main {
         use JSON;
         my @all_trees;
         for my $group (sort keys %{$cfg->{build_groups} // {}}) {
-            my ($registry, $tree) = build_tree_for_group($group, $cfg, {});
-            push @all_trees, $tree;
+            my $tree = build_order_json($cfg, $group);
+            push @all_trees, $tree if $tree;
         }
         print to_json(\@all_trees, { pretty => 1 });
         return 0;
