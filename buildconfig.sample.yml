@@ -1,0 +1,376 @@
+# IMPORTANT: All references to the Xcode project file must use the new unified project file (e.g., SampleProject.xcodeproj).
+# Do NOT reference any old or legacy Xcode project files. Update all build_command and outputs accordingly.
+#
+# Example:
+#   build_command: xcodebuild -project SampleProject.xcodeproj -scheme "SampleProject macOS" -configuration ${CONFIGURATION}
+#
+# This ensures the build system always uses the correct, current project structure.
+#
+# NOTE ON always_run:
+#   Setting always_run: true ensures a task or platform always runs when invoked,
+#   but ONLY if it is included in the build order (either explicitly as a target or as a dependency).
+#   If a platform or task is not in the build order, always_run has no effect.
+# Sample build configuration
+project_name: CarManager
+# scheme: The Xcode scheme to build for this platform (if applicable)
+scheme: CarManager macOS
+exclude_from_globals:
+  - tasks
+  - platforms
+  - build_groups
+  - logging
+  - exclude_from_globals
+  - name
+  - args
+  - command
+  - type
+  - dependencies
+  - children
+default_target: all
+continue_on_error: false
+validate_on_build: false # If true, validate build groups and config before every build
+
+# Platform definitions
+platforms:
+  - name: macOS
+    build_command: ./Scripts/build.pl --target mac --project "${project_name}" --scheme "${scheme}"
+    artifact_dir: build/macos
+    artifact_patterns:
+      - build/macos/*.app
+    # uses global project_name and scheme
+  - name: iOS
+    build_command: ./Scripts/build.pl --target ios --project "${project_name}" --scheme "${scheme}"
+    artifact_dir: build/ios
+    artifact_patterns:
+      - build/ios/*.ipa
+    project_name: CarManager iOS
+    scheme: CarManager iOS
+  - name: Android
+    build_command: ./gradlew assembleRelease -PprojectName="${project_name}"
+    artifact_dir: build/android
+    artifact_patterns:
+      - build/android/*.apk
+    project_name: CarManagerAndroid
+    # no scheme needed
+  - name: macOS_tests
+    scheme: "SampleProjectTests macOS"
+    # For test platforms, always_run: true ensures tests always run when invoked, even if outputs exist.
+    # NOTE: always_run only applies if this platform is included in the build order (directly or as a dependency).
+    always_run: true
+    artifact_dir: build/macos-tests
+    # Always use the new Xcode project file:
+    build_command: xcodebuild -project SampleProject.xcodeproj -scheme "SampleProjectTests macOS" test
+  - name: iOS_tests
+    scheme: "SampleProjectTests iOS"
+    # For test platforms, always_run: true ensures tests always run when invoked, even if outputs exist.
+    # NOTE: always_run only applies if this platform is included in the build order (directly or as a dependency).
+    always_run: true
+    artifact_dir: build/ios-tests
+    # Always use the new Xcode project file:
+    build_command: xcodebuild -project SampleProject.xcodeproj -scheme "SampleProjectTests iOS" test
+
+# Build Groups
+# Build Groups define collections of platforms that can be built together.
+# A target can be a specific platform name or a build group name.
+# Each group can have its own continue_on_error setting for hierarchical error handling.
+#
+# continue_on_error: fail-fast setting for groups
+#   - true: try all sub-targets, but group fails if any fail
+#   - false: halt group on first failure
+#
+# Use cases:
+# - Set to false for sequential workflows where each step depends on the previous
+# - Set to true for parallel builds or when you want partial results
+# - Set to true for CI/CD where you want to see all failures at once
+# ---
+# Multi-Argument Task Example
+#
+# To pass multiple arguments to a task, use the 'args' field in a build group target.
+# You can specify arguments as a YAML list (for positional args) or as a mapping (for key=value pairs):
+#
+# Example (list):
+#   - name: increment-version
+#     args: [patch, macOS]
+#
+# Example (mapping):
+#   - name: custom-task
+#     args:
+#       platform: iOS
+#       foo: bar
+#
+# Both forms are supported. The build system will pass these as positional or environment variables to the task script.
+#
+# See the 'demo_group' below for more examples.
+# ---
+build_groups:
+  all:
+    continue_on_error: true # Continue to next group even if previous groups failed
+    targets:
+      - macOS
+      - iOS
+  tests:
+    continue_on_error: true # Continue to next test group even if previous failed
+    targets:
+      - macOS_tests
+      - iOS_tests
+  all_tests:
+    continue_on_error: false # Don't continue if any test fails
+    targets:
+      - all_tests_runner
+  apple:
+    continue_on_error: true # Continue to next platform even if previous failed
+    targets:
+      - macOS
+      - iOS
+  mac:
+    continue_on_error: false # Halt if any step fails - each step depends on the previous
+    targets:
+      - macOS
+      - increment-build-macOS
+      - commit-changes
+      - create-tag
+      - push-changes
+  ios:
+    continue_on_error: false # Halt if any step fails - each step depends on the previous
+    targets:
+      - iOS
+      - increment-build-iOS
+      - commit-changes
+      - create-tag
+      - push-changes
+  validate:
+    continue_on_error: false # Don't continue if validation fails
+    targets:
+      - generate-file-list
+  # This is a recursive group that includes other groups
+  ci:
+    continue_on_error: true # Continue CI even if some parts fail
+    targets:
+      - all
+      - tests
+  version-major:
+    continue_on_error: false # Don't continue if version increment fails
+    targets:
+      - increment-major
+  version-minor:
+    continue_on_error: false # Don't continue if version increment fails
+    targets:
+      - increment-minor
+  version-patch:
+    continue_on_error: false # Don't continue if version increment fails
+    targets:
+      - increment-patch
+  demo_group:
+    continue_on_error: true
+    targets:
+      - name: increment-major
+        args: [macOS]
+      - name: increment-major
+        args:
+          platform: iOS
+      - name: custom-task
+        args:
+          platform: macOS
+          foo: bar
+      - name: custom-task
+        args: [--platform, iOS, --foo, bar]
+  
+  # --- Instance Support Example ---
+  # This demonstrates the hybrid approach for explicit instance support
+  instance_demo:
+    continue_on_error: true
+    targets:
+      # First instance of custom-task with explicit instance ID
+      - name: custom-task
+        instance: "setup"
+        args:
+          platform: macOS
+          phase: "setup"
+      
+      # commit-changes depends on the first instance of custom-task (implicit reference)
+      - name: commit-changes
+        depends: custom-task
+        args:
+          arg1: macOS
+      
+      # Second instance of custom-task with different instance ID
+      - name: custom-task
+        instance: "cleanup"
+        args:
+          platform: iOS
+          phase: "cleanup"
+      
+      # increment-build depends on the second instance of custom-task (implicit reference)
+      - name: increment-build
+        depends: custom-task
+        args:
+          arg1: iOS
+      
+      # create-tag explicitly depends on the first instance of custom-task
+      - name: create-tag
+        depends:
+          - name: custom-task
+            instance: "setup"
+        args:
+          arg1: macOS
+      
+      # push-changes uses special keywords: "@first" and "@last"
+      - name: push-changes
+        depends:
+          - name: custom-task
+            instance: "@first"  # Explicit reference to first instance
+          - name: custom-task
+            instance: "@last"   # Explicit reference to most recent instance
+        args:
+          arg1: macOS
+# ---
+# In the tasks section, document how arguments are received:
+#
+# - For positional args (YAML list), the first is exported as $type, the second as $platform, etc.
+# - For mapping args, each key is exported as an environment variable.
+#
+# Example task definition:
+#   - name: increment-version
+#     description: "Increment version for a specific platform and type"
+#     command: "./Scripts/increment_version.sh ${type} ${platform}"
+#
+#   - name: custom-task
+#     description: "Demo task for argument passing"
+#     command: "echo Platform is ${platform}, Foo is ${foo}"
+# ---
+#
+# --- Instance Support Documentation ---
+#
+# The build system supports multiple instances of the same task within a group using a hybrid approach:
+#
+# 1. **Implicit References (Default)**: When you specify `depends: F`, it references the most recent
+#    instance of F in the same group context.
+#
+# 2. **Explicit References**: When you specify `depends: { name: F, instance: "first" }`, it references
+#    the specific instance with that instance ID.
+#
+# 3. **Special Keywords**: You can use "@first" and "@last" to reference the first or most recent
+#    instance of a task.
+#
+# 4. **Instance Declaration**: Use `instance: "identifier"` to create a named instance of a task.
+#
+# Example:
+#   - name: F
+#     instance: "setup"      # Creates instance "setup" of task F
+#   - name: B
+#     depends: F             # Implicit: depends on most recent F (setup)
+#   - name: F
+#     instance: "cleanup"    # Creates instance "cleanup" of task F
+#   - name: C
+#     depends: F             # Implicit: depends on most recent F (cleanup)
+#   - name: D
+#     depends:               # Explicit: depends on specific instance
+#       - name: F
+#         instance: "setup"
+#   - name: E
+#     depends:               # Using special keywords
+#       - name: F
+#         instance: "@first"  # First instance (setup)
+#       - name: F
+#         instance: "@last"   # Most recent instance (cleanup)
+# ---
+
+# Artifact management with retention policies
+artifacts:
+  archive_enabled: true
+  archive_format: zip
+  archive_name_template: "{project}_{platform}_{version}_{build}_{date}"
+  
+  # Retention configuration - choose one type:
+  
+  # Option 1: Simple retention (delete after X days)
+  retention:
+    type: "simple"
+    simple:
+      days: 30 # Keep artifacts for 30 days
+  
+  # Option 2: Hierarchical retention (different amounts for different periods)
+  # retention:
+  #   type: "hierarchical"
+  #   hierarchical:
+  #     intervals:
+  #       - period: "7d"     # 7 days
+  #         keep: "all"      # Keep all artifacts from last 7 days
+  #       - period: "4w"     # 4 weeks
+  #         keep: 5          # Keep 5 artifacts from last 4 weeks
+  #       - period: "6M"     # 6 months
+  #         keep: 2          # Keep 2 artifacts from last 6 months
+  #       - period: "1y"     # 1 year
+  #         keep: 1          # Keep 1 artifact from last year
+  
+  # Option 3: Bucketed retention (group by time periods)
+  # retention:
+  #   type: "bucketed"
+  #   bucketed:
+  #     buckets:
+  #       - period: "1h"   # Last hour
+  #         keep: "all"    # Keep all artifacts from last hour
+  #       - period: "1d"   # Last day
+  #         keep_count: 2
+  #         keep_interval: "h"     # Keep 2 artifacts per hour for last day
+  #       - period: "1w"   # Last week
+  #         keep_count: 3
+  #         keep_interval: "d"     # Keep 3 artifacts per day for last week
+  #       - period: "1M"   # Last month
+  #         keep_count: 2
+  #         keep_interval: "w"     # Keep 2 artifacts per week for last month
+  #       - period: "6M"   # Last 6 months
+  #         keep_count: 1
+  #         keep_interval: "M"     # Keep 1 artifact per month for last 6 months
+  
+  cleanup_enabled: true
+
+# Verbosity flags for subcommands
+verbosity_flags:
+  zip:
+    quiet: "-q"
+    normal: ""
+    verbose: "-v"
+    debug: "-v"
+  tar:
+    quiet: "--quiet"
+    normal: ""
+    verbose: "--verbose"
+    debug: "--verbose"
+
+# Per-platform retention policies (optional)
+platform_retention:
+  macOS:
+    type: "bucketed"
+    bucketed:
+      buckets:
+        - period: "2h"   # Last 2 hours
+          keep: "all"    # Keep all artifacts
+        - period: "1d"   # Last day
+          keep_count: 3
+          keep_interval: "h"     # Keep 3 artifacts per hour
+        - period: "1w"   # Last week
+          keep_count: 2
+          keep_interval: "d"     # Keep 2 artifacts per day
+  iOS:
+    type: "hierarchical"
+    hierarchical:
+      intervals:
+        - period: "1d"
+          keep: "all"
+        - period: "1w"
+          keep: 3
+        - period: "1M"
+          keep: 1
+
+tasks:
+  - name: increment-major
+    description: "Increment major version number for all platforms or a specific platform"
+    command: "./Scripts/increment_version.sh major ${platform}"
+  - name: custom-task
+    description: "Demo task for argument passing"
+    command: "echo Platform is ${platform}, Foo is ${foo}"
+  - name: commit-changes
+    description: "Commit all changes with version message (optional platform argument)"
+    command: "./Scripts/commit_and_tag.sh commit $arg1"
+    args_optional: true
