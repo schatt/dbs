@@ -2825,11 +2825,34 @@ sub print_build_summary {
                 my $execution_entry = $execution_order_ref->[$i];
                 # Execution order now contains hashes with node information
                 if (ref($execution_entry) eq 'HASH' && exists $execution_entry->{node_name}) {
+                    my $display_status = $execution_entry->{status};
+                    my $display_timestamp = $execution_entry->{timestamp};
+                    
+                    # Use completion timestamp if available, otherwise use ready timestamp
+                    if (exists $execution_entry->{completion_timestamp}) {
+                        $display_timestamp = $execution_entry->{completion_timestamp};
+                    }
+                    
+                    # Format status for better readability
+                    if ($display_status eq 'done') {
+                        $display_status = 'completed';
+                    } elsif ($display_status eq 'failed') {
+                        $display_status = 'failed';
+                    } elsif ($display_status eq 'skipped') {
+                        $display_status = 'skipped';
+                    } elsif ($display_status eq 'not-run') {
+                        $display_status = 'not-run';
+                    } elsif ($display_status eq 'ready') {
+                        $display_status = 'ready';
+                    } elsif ($display_status eq 'executing' || $display_status eq 'running') {
+                        $display_status = 'running';
+                    }
+                    
                     print sprintf("%2d. %s (%s at +%ds)\n", 
                         $i + 1, 
                         $execution_entry->{node_name}, 
-                        $execution_entry->{status},
-                        $execution_entry->{timestamp});
+                        $display_status,
+                        $display_timestamp);
                 } else {
                     # Fallback for backward compatibility
                     print sprintf("%2d. %s (unknown format)\n", $i + 1, ref($execution_entry));

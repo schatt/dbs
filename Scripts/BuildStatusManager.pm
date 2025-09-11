@@ -253,6 +253,34 @@ sub add_breadcrumb {
         }
     }
     
+    # Also track completion statuses for better execution order visibility
+    if ($status eq 'done' || $status eq 'failed' || $status eq 'skipped' || $status eq 'not-run') {
+        # Find existing entry and update its status, or add new entry if not found
+        my $existing_entry = undef;
+        for my $entry (@{$self->{execution_order}}) {
+            if ($entry->{node_key} eq $stable_key) {
+                $existing_entry = $entry;
+                last;
+            }
+        }
+        
+        if ($existing_entry) {
+            # Update existing entry with completion status
+            $existing_entry->{status} = $status;
+            $existing_entry->{completion_timestamp} = $timestamp;
+        } else {
+            # Add new entry for completion status (in case node wasn't tracked before)
+            push @{$self->{execution_order}}, {
+                node_key => $stable_key,
+                node_name => $node->name,
+                timestamp => $timestamp,
+                phase => $phase,
+                status => $status,
+                completion_timestamp => $timestamp
+            };
+        }
+    }
+    
     log_debug("BuildStatusManager::add_breadcrumb: " . $node->name . " -> $status (phase: $phase, time: +${timestamp}s)");
 }
 
