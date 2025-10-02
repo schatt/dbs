@@ -1777,7 +1777,6 @@ sub check_node_ready_buildnode {
 	print "[DEBUG] transition_node_buildnode called for node: " . ($node ? $node->name : 'undefined') . ", new_status: $new_status\n";
 	
 	$STATUS_MANAGER->set_status($node, $new_status);
-        $node_status_ref->{$node} = $new_status;
         
         # Clean up blocked_by relationships when node completes
         if ($new_status eq 'done' || $new_status eq 'skipped' || $new_status eq 'failed') {

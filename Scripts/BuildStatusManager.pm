@@ -319,7 +319,11 @@ sub get_build_summary {
     my $skipped_nodes = 0;
     
     # Iterate through the nested hash structure: {stable_key}{invocation_id} = status
+    print "[DEBUG] get_all_status: type of status = " . ref($self->{status}) . "\n";
+    print "[DEBUG] get_all_status: status value = " . (ref($self->{status}) ? "HASH" : $self->{status}) . "\n";
+    print "[DEBUG] get_all_status: keys = " . join(", ", keys %{$self->{status}}) . "\n";
     for my $stable_key (keys %{$self->{status}}) {
+        print "[DEBUG] get_all_status: stable_key = $stable_key, value type = " . ref($self->{status}{$stable_key}) . "\n";
         for my $invocation_id (keys %{$self->{status}{$stable_key}}) {
             my $status = $self->{status}{$stable_key}{$invocation_id};
             $total_nodes++;
