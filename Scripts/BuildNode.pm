@@ -64,6 +64,11 @@ sub new {
     $fields{blocked_by} ||= {};  # Hash of node_key => 1 for nodes that block this one
     $fields{blocks} ||= {};      # Hash of node_key => 1 for nodes this one blocks
     $fields{child_order} ||= undef;  # Order within parent group (1, 2, 3, etc.)
+    
+    # Conditional notification system
+    $fields{success_notify} ||= [];  # Array of hashes: [{node_ref => false}, ...]
+    $fields{failure_notify} ||= [];  # Array of hashes: [{node_ref => false}, ...]
+    $fields{conditional} ||= 0;      # Flag: 1 if this node only runs when conditions are met
     # After initializing fields, add this diagnostic check
     if ((($fields{type} // '') ne 'group') && $fields{children} && ref($fields{children}) eq 'ARRAY' && @{ $fields{children} }) {
         my $children_str = join(', ', map { $_->{name} // '<unknown>' } @{ $fields{children} });
@@ -97,6 +102,125 @@ sub inputs       { $_[0]->{inputs} || [] }
 sub outputs      { $_[0]->{outputs} || [] }
 sub log_file     { $_[0]->{log_file} }
 sub archive      { $_[0]->{archive} }
+
+# Conditional notification system accessors
+sub success_notify { $_[0]->{success_notify} || [] }
+sub failure_notify { $_[0]->{failure_notify} || [] }
+sub conditional   { $_[0]->{conditional} || 0 }
+sub set_conditional { $_[0]->{conditional} = $_[1] }
+
+# Methods to manage conditional notification arrays
+sub add_success_notify {
+    my ($self, $node_ref) = @_;
+    $self->{success_notify} ||= [];
+    push @{$self->{success_notify}}, {
+        node => $node_ref,
+        status => 0  # 0 = not-run, 1 = true, false = false
+    };
+}
+
+sub add_failure_notify {
+    my ($self, $node_ref) = @_;
+    $self->{failure_notify} ||= [];
+    push @{$self->{failure_notify}}, {
+        node => $node_ref,
+        status => 0  # 0 = not-run, 1 = true, false = false
+    };
+}
+
+sub update_success_notify {
+    my ($self, $node_ref, $status) = @_;
+    my $success_array = $self->{success_notify} || [];
+    print "[DEBUG] update_success_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s success_notify array\n";
+    print "[DEBUG] update_success_notify: Array has " . scalar(@$success_array) . " entries\n";
+    for my $i (0..$#$success_array) {
+        my $entry = $success_array->[$i];
+        print "[DEBUG] update_success_notify: Checking entry $i\n";
+        if (refaddr($entry->{node}) == refaddr($node_ref)) {
+            if ($status) {
+                $entry->{status} = 1;  # Mark as true
+                print "[DEBUG] update_success_notify: Updated " . $entry->{node}->name . " to status 1\n";
+            } else {
+                $entry->{status} = -1;  # Mark as not-met
+                print "[DEBUG] update_success_notify: Updated " . $entry->{node}->name . " to status -1\n";
+            }
+            return;
+        }
+    }
+    print "[DEBUG] update_success_notify: Could not find " . $node_ref->name . " in array\n";
+}
+
+sub update_failure_notify {
+    my ($self, $node_ref, $status) = @_;
+    my $failure_array = $self->{failure_notify} || [];
+    print "[DEBUG] update_failure_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s failure_notify array\n";
+    print "[DEBUG] update_failure_notify: Array has " . scalar(@$failure_array) . " entries\n";
+    for my $i (0..$#$failure_array) {
+        my $entry = $failure_array->[$i];
+        print "[DEBUG] update_failure_notify: Checking entry $i\n";
+        if (refaddr($entry->{node}) == refaddr($node_ref)) {
+            if ($status) {
+                $entry->{status} = 1;  # Mark as true
+                print "[DEBUG] update_failure_notify: Updated " . $entry->{node}->name . " to status 1\n";
+            } else {
+                $entry->{status} = -1;  # Mark as not-met
+                print "[DEBUG] update_failure_notify: Updated " . $entry->{node}->name . " to status -1\n";
+            }
+            return;
+        }
+    }
+    print "[DEBUG] update_failure_notify: Could not find " . $node_ref->name . " in array\n";
+}
+
+sub all_success_conditions_met {
+    my ($self) = @_;
+    my $success_array = $self->{success_notify} || [];
+    return 0 if @$success_array == 0;  # No conditions = not-met
+    
+    # Check if any entries are still "not-run" (status 0)
+    for my $entry (@$success_array) {
+        print "[DEBUG] all_success_conditions_met: Entry has status " . $entry->{status} . "\n";
+        return -1 if $entry->{status} == 0;  # Still waiting for this notifier
+    }
+    
+    # All notifiers have completed, check if at least one succeeded
+    for my $entry (@$success_array) {
+        return 1 if $entry->{status} == 1;  # At least one succeeded
+    }
+    
+    return 0;  # All failed (status -1)
+}
+
+sub all_failure_conditions_met {
+    my ($self) = @_;
+    my $failure_array = $self->{failure_notify} || [];
+    return 0 if @$failure_array == 0;  # No conditions = not-met
+    
+    # Check if any entries are still "not-run" (status 0)
+    for my $entry (@$failure_array) {
+        print "[DEBUG] all_failure_conditions_met: Entry has status " . $entry->{status} . "\n";
+        return -1 if $entry->{status} == 0;  # Still waiting for this notifier
+    }
+    
+    # All notifiers have completed, check if at least one failed
+    for my $entry (@$failure_array) {
+        return 1 if $entry->{status} == 1;  # At least one failed
+    }
+    
+    return 0;  # All succeeded (status -1)
+}
+
+sub add_notifies_on_success {
+    my ($self, $target_node) = @_;
+    $self->{notifies_on_success} ||= [];
+    push @{$self->{notifies_on_success}}, $target_node;
+}
+
+sub add_notifies_on_failure {
+    my ($self, $target_node) = @_;
+    $self->{notifies_on_failure} ||= [];
+    push @{$self->{notifies_on_failure}}, $target_node;
+}
 sub continue_on_error { $_[0]->{continue_on_error} }
 sub status       { $_[0]->{status} }
 sub duration     { $_[0]->{duration} }

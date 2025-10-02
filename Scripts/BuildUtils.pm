@@ -401,15 +401,15 @@ sub generate_node_key {
 # WHY: Ensures single node instance per canonical key while enabling worklist-driven graph expansion
 # INTERNAL: This is an internal function used by build_graph_with_worklist, not intended for direct use
 sub get_or_create_node {
-    my ($name, $args, $parent_key, $parent_node, $relationship, $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, $instance_spec, $is_dependency_child) = @_;
+    my ($name, $args, $parent_key, $parent_node, $relationship, $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, $instance_spec, $dedupe_nodes) = @_;
     
-    # Look up existing node by name and args first - but only for dependency children
+    # Look up existing node by name and args first - but only when deduplication is enabled
     # Regular tasks should be allowed to exist in multiple parent contexts
     my $existing_node;
-    if ($is_dependency_child) {
+    if ($dedupe_nodes) {
         $existing_node = $registry->get_node_by_name_and_args($name, $args);
         if ($existing_node) {
-            log_debug("Found existing dependency child node: $name");
+            log_debug("Found existing deduplicated node: $name");
             return $existing_node;
         }
     }
@@ -423,9 +423,9 @@ sub get_or_create_node {
     
     # Create a new node
     log_debug("Creating new node: $name");
-    # Add "dep" flag to canonical key for dependency children to enable deduplication
-    my $canonical_key = $is_dependency_child ? "$name|dep" : $name;
-    my $node = build_and_register_node($entry, \%merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $is_dependency_child);
+    # Add "dep" flag to canonical key for deduplicated nodes to enable deduplication
+    my $canonical_key = $dedupe_nodes ? "$name|dep" : $name;
+    my $node = build_and_register_node($entry, \%merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $dedupe_nodes);
     return undef unless $node;
     
     # Add new node to worklist for processing
@@ -782,26 +782,8 @@ sub process_node_relationships_immediately {
     } elsif ($relationship_type eq 'notify_on_success') {
         $source_node->add_notify_on_success($target_node);
         
-        # CRITICAL: Create execution dependency for notification relationships
-        # When a node notifies another node on success, the notified node should depend on the notifier
-        # This ensures proper execution order: build completes -> tag creation runs
-        if ($registry && $registry->can('would_create_cycle')) {
-            if ($registry->would_create_cycle($target_node, $source_node)) {
-                my $cycle_path = $registry->_find_cycle_path($target_node, $source_node);
-                log_debug("Skipping notification dependency " . $target_node->name . " -> " . $source_node->name . " (would create cycle)");
-            } else {
-                $registry->add_dependency($target_node, $source_node);
-                log_debug("Added notification dependency: " . $target_node->name . " depends on " . $source_node->name);
-            }
-        } else {
-            # Fallback to direct dependency addition
-            if ($target_node->would_create_cycle($source_node)) {
-                log_debug("Skipping notification dependency " . $target_node->name . " -> " . $source_node->name . " (would create cycle)");
-            } else {
-                $target_node->add_dependency($source_node);
-                log_debug("Added notification dependency: " . $target_node->name . " depends on " . $source_node->name);
-            }
-        }
+        # NOTE: Conditional notifications now use the new array-based system
+        # No need for bidirectional setup or static dependencies
         
         # Propagate parent blockers to conditional notification target
         propagate_parent_blockers_to_children($source_node, $target_node, $registry);
@@ -1650,7 +1632,7 @@ sub create_node {
 # WHY: Provides the complete node creation and registration process for the build system
 # INTERNAL: This is an internal function used by get_or_create_node, not intended for direct use
 sub build_and_register_node {
-    my ($entry, $merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $is_dependency_child) = @_;
+    my ($entry, $merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $dedupe_nodes) = @_;
     return undef unless $entry;
     unless (defined $entry->{name}) {
         my $ref_name = (ref($entry) eq 'HASH' && exists $entry->{ref_name}) ? $entry->{ref_name} : '';
@@ -1682,13 +1664,13 @@ sub build_and_register_node {
         return undef;
     }
     
-    # Use the canonical key passed from the caller - but only deduplicate for dependency children
+    # Use the canonical key passed from the caller - but only deduplicate when deduplication is enabled
     # Regular tasks should be allowed to exist in multiple parent contexts
     my $existing_node;
-    if ($is_dependency_child) {
+    if ($dedupe_nodes) {
         $existing_node = $registry->get_node_by_key($canonical_key);
         if ($existing_node) {
-            log_debug("build_and_register_node: returning existing dependency child node " . $existing_node->name . " with key " . $canonical_key);
+            log_debug("build_and_register_node: returning existing deduplicated node " . $existing_node->name . " with key " . $canonical_key);
             return $existing_node;
         }
     }
@@ -1878,18 +1860,75 @@ sub build_graph_with_worklist {
                     my $child_order = 1;   # Start with order 1
                     
                     for my $target (@{ $entry->{targets} }) {
-                        my ($child_name, $child_args, $child_instance);
+                        my ($child_name, $child_args, $child_notifies, $child_requires_execution_of, $child_instance, $child_notify_on_success, $child_notify_on_failure);
                         if (ref($target) eq 'HASH') {
                             $child_name = $target->{name};
                             $child_args = $target->{args};
+                            $child_notifies = $target->{notifies};
+                            $child_requires_execution_of = $target->{requires_execution_of};
                             $child_instance = $target->{instance};
+                            $child_notify_on_success = $target->{notify_on_success};
+                            $child_notify_on_failure = $target->{notify_on_failure};
                         } else {
                             $child_name = $target;
+                            $child_notifies = undef;
+                            $child_requires_execution_of = undef;
                             $child_instance = undef;
+                            $child_notify_on_success = undef;
+                            $child_notify_on_failure = undef;
                         }
                         
                         # Get the child config entry to access its command for selective global merging
                         my $child_entry = load_config_entry($child_name, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults);
+                        
+                        # Merge notification fields from target specification with config entry
+                        if ($child_entry && ref($child_entry) eq 'HASH') {
+                            # Merge notify_on_success if specified in target
+                            if ($child_notify_on_success) {
+                                if (ref($child_notify_on_success) eq 'ARRAY') {
+                                    $child_entry->{notifies_on_success} = $child_notify_on_success;
+                                } else {
+                                    $child_entry->{notifies_on_success} = [$child_notify_on_success];
+                                }
+                            }
+                            
+                            # Merge notify_on_failure if specified in target
+                            if ($child_notify_on_failure) {
+                                if (ref($child_notify_on_failure) eq 'ARRAY') {
+                                    $child_entry->{notifies_on_failure} = $child_notify_on_failure;
+                                } else {
+                                    $child_entry->{notifies_on_failure} = [$child_notify_on_failure];
+                                }
+                            }
+                            
+                            # Merge notifies if specified in target
+                            if ($child_notifies) {
+                                if (ref($child_notifies) eq 'ARRAY') {
+                                    $child_entry->{notifies} = $child_notifies;
+                                } else {
+                                    $child_entry->{notifies} = [$child_notifies];
+                                }
+                            }
+                            
+                            # Merge requires_execution_of if specified in target
+                            if ($child_requires_execution_of) {
+                                if (ref($child_requires_execution_of) eq 'ARRAY') {
+                                    $child_entry->{requires_execution_of} = $child_requires_execution_of;
+                                } else {
+                                    $child_entry->{requires_execution_of} = [$child_requires_execution_of];
+                                }
+                            }
+                            
+                            # Update the lookup table to persist the changes
+                            if (exists $task_by_name->{$child_name}) {
+                                $task_by_name->{$child_name} = $child_entry;
+                            } elsif (exists $platform_by_name->{$child_name}) {
+                                $platform_by_name->{$child_name} = $child_entry;
+                            } elsif (exists $group_by_name->{$child_name}) {
+                                $group_by_name->{$child_name} = $child_entry;
+                            }
+                        }
+                        
                         my $child_command = $child_entry ? ($child_entry->{command} // $child_entry->{build_command} // '') : '';
                         my $child_merged_args = merge_args($child_command, $child_args, $node->args, $global_defaults);
                         
@@ -2042,15 +2081,16 @@ sub process_notification_relationships {
             next; # Skip invalid notification format
         }
         
-        # Look up the notification target node
-        my $notify_node = $registry->get_node_by_name_and_args($notify_name, $notify_args);
+        # Create the notification target node using GOCN with deduplication
+        my $notify_node = get_or_create_node($notify_name, $notify_args, undef, undef, 'notification', $context->{global_defaults}, $registry, $context->{task_by_name}, $context->{platform_by_name}, $context->{group_by_name}, $context->{cfg}, $context->{global_defaults}, $context->{worklist}, undef, 1);
+        
         if ($notify_node) {
             push @processed_notifications, $notify_node;
             
             # Establish the notification relationship
             process_node_relationships_immediately($source_node, $notify_node, 'notify', $registry);
         } else {
-            log_debug("Warning: Could not find notification target: $notify_name");
+            log_debug("Warning: Could not create notification target: $notify_name");
         }
     }
     
@@ -2084,10 +2124,26 @@ sub process_conditional_notifications {
             next; # Skip invalid notification format
         }
         
-        # Look up the notification target node
-        my $notify_node = $registry->get_node_by_name_and_args($notify_name, $notify_args);
+        # Create the notification target node using GOCN with deduplication
+        my $notify_node = get_or_create_node($notify_name, $notify_args, undef, undef, 'notification', $context->{global_defaults}, $registry, $context->{task_by_name}, $context->{platform_by_name}, $context->{group_by_name}, $context->{cfg}, $context->{global_defaults}, $context->{worklist}, undef, 1);
+        
         if ($notify_node) {
             push @processed_notifications, $notify_node;
+            
+            # Set up conditional notification arrays
+            if ($condition_type eq 'success') {
+                $notify_node->add_success_notify($source_node);
+                $notify_node->set_conditional(1);
+                # Also store the target node in the source node's notifies_on_success
+                $source_node->add_notifies_on_success($notify_node);
+                print "[DEBUG] Set up success notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")\n";
+            } else {
+                $notify_node->add_failure_notify($source_node);
+                $notify_node->set_conditional(1);
+                # Also store the target node in the source node's notifies_on_failure
+                $source_node->add_notifies_on_failure($notify_node);
+                print "[DEBUG] Set up failure notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")\n";
+            }
             
             # Establish the conditional notification relationship
             if ($condition_type eq 'success') {
@@ -2096,7 +2152,7 @@ sub process_conditional_notifications {
                 process_node_relationships_immediately($source_node, $notify_node, 'notify_on_failure', $registry);
             }
         } else {
-            log_debug("Warning: Could not find conditional notification target: $notify_name");
+            log_debug("Warning: Could not create conditional notification target: $notify_name");
         }
     }
     
@@ -2238,7 +2294,7 @@ sub create_dependency_parent {
         log_debug("Creating dependency group child: $child_name for group: " . $dep_group_node->name);
         
         # Create/find the child node using get_or_create_node for proper deduplication
-        # Pass is_dependency_child=1 to enable deduplication for dependency group children
+        # Pass dedupe_nodes=1 to enable deduplication for dependency group children
         my $child_node = get_or_create_node($child_name, $child_args, $dep_group_node->key, $dep_group_node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, undef, 1);
         
         if ($child_node) {
@@ -2449,7 +2505,7 @@ sub apply_category_defaults {
 sub extract_target_info {
     my ($target) = @_;
     
-    my ($name, $args, $notifies, $requires_execution_of, $instance);
+    my ($name, $args, $notifies, $requires_execution_of, $instance, $notify_on_success, $notify_on_failure);
     
     if (ref($target) eq 'HASH') {
         $name = $target->{name};
@@ -2457,15 +2513,19 @@ sub extract_target_info {
         $notifies = $target->{notifies};
         $requires_execution_of = $target->{requires_execution_of};
         $instance = $target->{instance};
+        $notify_on_success = $target->{notify_on_success};
+        $notify_on_failure = $target->{notify_on_failure};
     } else {
         $name = $target;
         $args = undef;
         $notifies = undef;
         $requires_execution_of = undef;
         $instance = undef;
+        $notify_on_success = undef;
+        $notify_on_failure = undef;
     }
     
-    return ($name, $args, $notifies, $requires_execution_of, $instance);
+    return ($name, $args, $notifies, $requires_execution_of, $instance, $notify_on_success, $notify_on_failure);
 }
 
 # --- Resolve instance references for multi-instance tasks ---

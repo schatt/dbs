@@ -1,0 +1,20 @@
+tasks:
+  - name: b
+    command: echo "task b"
+
+  - name: c
+    command: echo "task c"
+
+  - name: d
+    command: echo "task d"
+
+build_groups:
+  a:
+    continue_on_error: false
+    targets:
+      - name: b
+        notify_on_success:
+          - name: d
+      - name: c
+        notify_on_success:
+          - name: d
