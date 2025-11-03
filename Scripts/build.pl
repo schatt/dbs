@@ -33,8 +33,19 @@ our $CALLER_CWD = getcwd();
 # Resolve symlinks to find the actual Scripts directory (works when script is symlinked)
 use FindBin;
 BEGIN {
-    # abs_path resolves symlinks, so this works even when the script is symlinked
-    my $script_dir = abs_path($FindBin::Bin);
+    # Resolve the actual script path (following symlinks) and get its directory
+    # $FindBin::RealBin is the directory of the actual script (resolves symlinks)
+    # $FindBin::RealScript is the filename of the actual script
+    # If RealBin exists, use it; otherwise resolve the script path manually
+    my $script_dir;
+    if ($FindBin::RealBin) {
+        $script_dir = $FindBin::RealBin;
+    } else {
+        # Fallback: resolve the script path manually
+        my $script_file = File::Spec->catfile($FindBin::Bin, $FindBin::Script);
+        my $script_path = abs_path($script_file);
+        $script_dir = dirname($script_path);
+    }
     unshift @INC, $script_dir;
 }
 
