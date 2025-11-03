@@ -64,7 +64,19 @@ TARGET_DIR="${TARGET_DIR:-$DEFAULT_TARGET_DIR}"
 TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
 
 # Convert to absolute path
-TARGET_DIR="$(cd "$(dirname "$TARGET_DIR")" 2>/dev/null && pwd)/$(basename "$TARGET_DIR")" || TARGET_DIR="$(cd "$(dirname "$TARGET_DIR")" && pwd)/$(basename "$TARGET_DIR")"
+if [ -d "$TARGET_DIR" ]; then
+    TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
+else
+    # If directory doesn't exist, resolve parent and append basename
+    PARENT_DIR="$(dirname "$TARGET_DIR")"
+    BASENAME="$(basename "$TARGET_DIR")"
+    if [ -d "$PARENT_DIR" ]; then
+        TARGET_DIR="$(cd "$PARENT_DIR" && pwd)/$BASENAME"
+    else
+        # If parent doesn't exist either, use as-is (will be created)
+        TARGET_DIR="$(cd "$(dirname "$PARENT_DIR")" 2>/dev/null && pwd)/$(basename "$PARENT_DIR")/$BASENAME" || TARGET_DIR="$TARGET_DIR"
+    fi
+fi
 
 echo "Creating symlinks to DBS scripts..."
 echo "DBS root: $DBS_ROOT"
@@ -93,23 +105,31 @@ create_symlink() {
             return 0
         else
             echo "[WARN] $link_name exists but points to different location: $existing_target"
+            if [ "$FORCE" = true ]; then
+                rm "$link_path"
+            else
+                read -p "Overwrite? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "[SKIP] Keeping existing symlink"
+                    return 0
+                fi
+                rm "$link_path"
+            fi
+        fi
+    elif [ -e "$link_path" ]; then
+        echo "[WARN] $link_name exists but is not a symlink"
+        if [ "$FORCE" = true ]; then
+            rm "$link_path"
+        else
             read -p "Overwrite? (y/N): " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "[SKIP] Keeping existing symlink"
+                echo "[SKIP] Keeping existing file"
                 return 0
             fi
             rm "$link_path"
         fi
-    elif [ -e "$link_path" ]; then
-        echo "[WARN] $link_name exists but is not a symlink"
-        read -p "Overwrite? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "[SKIP] Keeping existing file"
-            return 0
-        fi
-        rm "$link_path"
     fi
     
     # Create symlink
@@ -134,22 +154,34 @@ if [ -L "$SCRIPTS_LINK" ]; then
         echo "[SKIP] dbs-scripts directory already symlinked correctly"
     else
         echo "[WARN] dbs-scripts exists but points to different location"
+        if [ "$FORCE" = true ]; then
+            rm "$SCRIPTS_LINK"
+            ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"
+            echo "[OK] Updated symlink: dbs-scripts -> $SCRIPTS_DIR"
+        else
+            read -p "Overwrite? (y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                rm "$SCRIPTS_LINK"
+                ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"
+                echo "[OK] Updated symlink: dbs-scripts -> $SCRIPTS_DIR"
+            fi
+        fi
+    fi
+elif [ -e "$SCRIPTS_LINK" ]; then
+    echo "[WARN] dbs-scripts exists but is not a symlink"
+    if [ "$FORCE" = true ]; then
+        rm "$SCRIPTS_LINK"
+        ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"
+        echo "[OK] Created symlink: dbs-scripts -> $SCRIPTS_DIR"
+    else
         read -p "Overwrite? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             rm "$SCRIPTS_LINK"
             ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"
-            echo "[OK] Updated symlink: dbs-scripts -> $SCRIPTS_DIR"
+            echo "[OK] Created symlink: dbs-scripts -> $SCRIPTS_DIR"
         fi
-    fi
-elif [ -e "$SCRIPTS_LINK" ]; then
-    echo "[WARN] dbs-scripts exists but is not a symlink"
-    read -p "Overwrite? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm "$SCRIPTS_LINK"
-        ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"
-        echo "[OK] Created symlink: dbs-scripts -> $SCRIPTS_DIR"
     fi
 else
     ln -s "$SCRIPTS_DIR" "$SCRIPTS_LINK"

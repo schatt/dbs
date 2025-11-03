@@ -22,7 +22,7 @@ use Parallel::ForkManager;
 use Digest::SHA qw(sha1_hex);
 use List::Util qw(all min);
 use Scalar::Util qw(blessed);
-use Cwd qw(getcwd);
+use Cwd qw(getcwd abs_path);
 use File::Spec;
 
 # Determine the caller's working directory (where the script is invoked from)
@@ -30,8 +30,13 @@ use File::Spec;
 our $CALLER_CWD = getcwd();
 
 # Add the Scripts directory relative to this script's location, not the current working directory
+# Resolve symlinks to find the actual Scripts directory (works when script is symlinked)
 use FindBin;
-use lib "$FindBin::Bin";
+BEGIN {
+    # abs_path resolves symlinks, so this works even when the script is symlinked
+    my $script_dir = abs_path($FindBin::Bin);
+    unshift @INC, $script_dir;
+}
 
 # All use statements at the top - proper Perl practice
 use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL handle_result_hash print_enhanced_tree print_node_tree build_graph_with_worklist print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order add_to_ready_queue add_to_groups_ready is_node_in_groups_ready get_eligible_pending_parent_nodes has_ready_nodes get_next_ready_node remove_from_ready_queue remove_from_groups_ready remove_from_ready_pending_parent get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes is_successful_completion_status);
