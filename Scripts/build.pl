@@ -3551,6 +3551,19 @@ sub main {
     for my $current_target (@target_list) {
         log_info("Processing target: $current_target");
         
+        # Validate target and warn if not found
+        unless ($display) {
+            my ($target_exists, $suggestion) = validate_target_with_suggestions($current_target, $cfg);
+            unless ($target_exists) {
+                log_warn("Target '$current_target' not found in build configuration.");
+                if ($suggestion) {
+                    log_warn($suggestion);
+                }
+                log_warn("Skipping target '$current_target'. Run 'dbs-build --list-targets' to see available targets.");
+                next;
+            }
+        }
+        
         # Initialize fresh state for this target
         @READY_PENDING_PARENT_NODES = ();
         @READY_QUEUE_NODES = ();
