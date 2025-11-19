@@ -13,7 +13,7 @@ our $VERBOSITY_LEVEL = 1; # 0=quiet, 1=normal, 2=verbose, 3=debug
 # Global queue variables are declared in build.pl - access them from main package
 
 =head1 NAME
-BuildUtils - Utility functions for CarManager build system
+BuildUtils - Utility functions for Distributed Build System (DBS)
 =cut
 
 =head1 SYNOPSIS
@@ -430,7 +430,7 @@ sub get_or_create_node {
     
     # Add new node to worklist for processing
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG] Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ")\n";
+        log_debug("Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ")");
     }
     
     
@@ -1848,7 +1848,7 @@ sub build_graph_with_worklist {
                 # This ensures consistent coordination logic across all node types
                 my @deps = $entry->{dependencies} && ref($entry->{dependencies}) eq 'ARRAY' ? @{ $entry->{dependencies} } : [];
                 if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                    print "[DEBUG]   Creating dependency group for node: " . $node->name . " with " . scalar(@deps) . " dependencies (node type: " . ($node->type // 'unknown') . ")\n";
+                    log_debug("Creating dependency group for node: " . $node->name . " with " . scalar(@deps) . " dependencies (node type: " . ($node->type // 'unknown') . ")");
                 }
                 my $dep_parent = create_dependency_parent($node, \@deps, $global_defaults, $node->args, $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, \@worklist);
                         # Note: create_dependency_parent already sets up the dependency relationship
@@ -1934,7 +1934,7 @@ sub build_graph_with_worklist {
                         
                         # Create/find the child node (single call, no recursion)
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                            print "[DEBUG]   Processing child '$child_name' with parent '" . $node->name . "' (child_order: $child_order, parent: " . $node->name . ")\n";
+                            log_debug("Processing child '$child_name' with parent '" . $node->name . "' (child_order: $child_order, parent: " . $node->name . ")");
                         }
                         my $child_node = get_or_create_node($child_name, $child_merged_args, $node->key, $node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, \@worklist, $child_instance);
                         
@@ -1954,9 +1954,9 @@ sub build_graph_with_worklist {
                         
                         # Establish parent->child relationship (this creates the tree structure AND child->parent notification)
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                            print "[DEBUG]   Establishing parent-child relationship: " . $node->name . " -> " . $child_node->name . "\n";
+                            log_debug("Establishing parent-child relationship: " . $node->name . " -> " . $child_node->name);
                             my $parents = $child_node->get_clean_parents();
-                            print "[DEBUG]   Child " . $child_node->name . " has " . scalar(@$parents) . " parents: " . join(", ", map { $_->name } @$parents) . "\n";
+                            log_debug("Child " . $child_node->name . " has " . scalar(@$parents) . " parents: " . join(", ", map { $_->name } @$parents));
                         }
                         process_node_relationships_immediately($node, $child_node, 'child', $registry);
                         # Register parent as a completion_notify target for the child
@@ -2136,13 +2136,13 @@ sub process_conditional_notifications {
                 $notify_node->set_conditional(1);
                 # Also store the target node in the source node's notifies_on_success
                 $source_node->add_notifies_on_success($notify_node);
-                print "[DEBUG] Set up success notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")\n";
+                log_debug("Set up success notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")");
             } else {
                 $notify_node->add_failure_notify($source_node);
                 $notify_node->set_conditional(1);
                 # Also store the target node in the source node's notifies_on_failure
                 $source_node->add_notifies_on_failure($notify_node);
-                print "[DEBUG] Set up failure notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")\n";
+                log_debug("Set up failure notification: " . $source_node->name . " -> " . $notify_node->name . " (conditional=" . $notify_node->conditional . ")");
             }
             
             # Establish the conditional notification relationship
@@ -2168,14 +2168,14 @@ sub create_dependency_parent {
     
     # Debug: log when this function is called
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG]   create_dependency_parent: ENTERING function for node: " . $original_node->name . "\n";
+        log_debug("create_dependency_parent: ENTERING function for node: " . $original_node->name);
     }
     
     # Debug output removed for cleaner logs
     
     # Debug: Log when create_dependency_parent is called
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG] create_dependency_parent: called for node: " . $original_node->name . "\n";
+        log_debug("create_dependency_parent: called for node: " . $original_node->name);
     }
     
     # Create dependency group name
@@ -2195,22 +2195,22 @@ sub create_dependency_parent {
     
     # STEP 2: Check if dependency group already exists in registry (BEFORE creating it)
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG] create_dependency_parent: checking registry for existing dependency group with key: " . $dep_group_canonical_key . "\n";
+        log_debug("create_dependency_parent: checking registry for existing dependency group with key: " . $dep_group_canonical_key);
     }
     my $existing_dep_group = $registry->get_node_by_key($dep_group_canonical_key);
     if ($existing_dep_group) {
         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-            print "[DEBUG] create_dependency_parent: found existing dependency group: " . $existing_dep_group->name . "\n";
+            log_debug("create_dependency_parent: found existing dependency group: " . $existing_dep_group->name);
         }
         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-            print "[DEBUG]   create_dependency_parent: found existing dependency group " . $existing_dep_group->name . " with canonical key " . $dep_group_canonical_key . "\n";
-            print "[DEBUG]   create_dependency_parent: existing dep_group parents: " . scalar(@{$existing_dep_group->{parents} || []}) . "\n";
+            log_debug("create_dependency_parent: found existing dependency group " . $existing_dep_group->name . " with canonical key " . $dep_group_canonical_key);
+            log_debug("create_dependency_parent: existing dep_group parents: " . scalar(@{$existing_dep_group->{parents} || []}));
         }
         
         # CRITICAL FIX: Ensure parent relationship is established even for existing dependency groups
         if (!$existing_dep_group->has_parent($original_node)) {
             if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                print "[DEBUG]   create_dependency_parent: establishing missing parent relationship for existing dependency group\n";
+                log_debug("create_dependency_parent: establishing missing parent relationship for existing dependency group");
             }
             $existing_dep_group->add_parent($original_node);
             $original_node->add_child($existing_dep_group);
@@ -2266,22 +2266,22 @@ sub create_dependency_parent {
     
     # Add dependency group to registry
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG]   create_dependency_parent: Adding dependency group to registry: " . $dep_group_node->name . " with parents: " . scalar(@{$dep_group_node->{parents} || []}) . "\n";
+        log_debug("create_dependency_parent: Adding dependency group to registry: " . $dep_group_node->name . " with parents: " . scalar(@{$dep_group_node->{parents} || []}));
     }
     $registry->add_node($dep_group_node);
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG]   create_dependency_parent: After adding to registry - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}) . "\n";
+        log_debug("create_dependency_parent: After adding to registry - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}));
     }
     
     # Set up parent-child relationship: dependency group is child of original node
     # This ensures proper coordination flow while allowing independent execution
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG]   create_dependency_parent: Before add_parent - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}) . "\n";
-        print "[DEBUG]   create_dependency_parent: Calling add_parent: " . $dep_group_node->name . " -> " . $original_node->name . "\n";
+        log_debug("create_dependency_parent: Before add_parent - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}));
+        log_debug("create_dependency_parent: Calling add_parent: " . $dep_group_node->name . " -> " . $original_node->name);
     }
     $dep_group_node->add_parent($original_node);
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        print "[DEBUG]   create_dependency_parent: After add_parent - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}) . "\n";
+        log_debug("create_dependency_parent: After add_parent - dep_group parents: " . scalar(@{$dep_group_node->{parents} || []}));
     }
     $original_node->add_child($dep_group_node);
     
@@ -2912,7 +2912,7 @@ sub handle_result_hash {
 our @EXPORT_OK = qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications process_node_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL build_graph_with_worklist extract_global_vars build_config_lookup_tables lookup_config_entry build_and_register_node print_node_tree read_args handle_result_hash print_enhanced_tree print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies generate_node_key load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order get_or_create_node process_node_relationships_immediately resolve_instance_reference track_instance generate_canonical_key add_to_ready_queue add_to_ready_pending_parent add_to_groups_ready remove_from_ready_queue remove_from_ready_pending_parent remove_from_groups_ready is_node_in_ready_queue is_node_in_ready_pending_parent is_node_in_groups_ready has_ready_nodes has_ready_pending_parent_nodes has_groups_ready_nodes get_next_ready_node get_next_groups_ready_node get_next_ready_pending_parent_node get_eligible_pending_parent_nodes check_any_parent_in_groups_ready is_successful_completion_status get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes);
 
 =head1 AUTHOR
-CarManager Build System
+Distributed Build System (DBS)
 =cut 
 
 sub process_node_notifications {

@@ -336,7 +336,7 @@ USAGE
 }
 
 if ($version) {
-    print "CarManager Build System (Perl) v1.0.0\n";
+    print "Distributed Build System (DBS) v1.0.0\n";
     exit 0;
 }
 
@@ -350,7 +350,7 @@ if ($generate_sample_config) {
         print <<'SAMPLE';
 # Sample buildconfig.yml
 # project_name: Required. The name of your Xcode project (without .xcodeproj). Used for all build commands.
-project_name: CarManager
+project_name: MyProject
 # exclude_from_globals: List of top-level keys that should NOT be propagated as global variables.
 exclude_from_globals:
   - tasks
@@ -371,14 +371,14 @@ platforms:
     artifact_patterns:
       - build/macos/*.app
     # scheme: Required. The Xcode scheme to build for this platform.
-    scheme: CarManager macOS
+    scheme: MyProject macOS
   - name: iOS
     build_command: ./Scripts/build.sh --target ios
     artifact_dir: build/ios
     artifact_patterns:
       - build/ios/*.ipa
     # scheme: Required. The Xcode scheme to build for this platform.
-    scheme: CarManager iOS
+    scheme: MyProject iOS
 tasks:
   - name: generate-file-list
     # Example: passing a secret as an environment variable (uncomment to use)
@@ -1790,7 +1790,7 @@ sub check_node_ready_buildnode {
     sub transition_node_buildnode {
 	my ($node, $new_status, $node_status_ref, $registry) = @_;
 	
-	print "[DEBUG] transition_node_buildnode called for node: " . ($node ? $node->name : 'undefined') . ", new_status: $new_status\n";
+	log_debug("transition_node_buildnode called for node: " . ($node ? $node->name : 'undefined') . ", new_status: $new_status");
 	
 	$STATUS_MANAGER->set_status($node, $new_status);
         
@@ -1812,11 +1812,11 @@ sub check_node_ready_buildnode {
         # When a node completes, update all nodes that are waiting for it
         if ($node && $node->can('get_notifies')) {
             my @notify_targets = @{ $node->get_notifies() || [] };
-            print "[DEBUG] transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " unconditional notification targets\n";
+            log_debug("transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " unconditional notification targets");
             for my $target_node (@notify_targets) {
                 if ($target_node) {
                     # Unconditional notifications are always sent regardless of success/failure
-                    print "[DEBUG] transition_node_buildnode: " . $node->name . " completed, sending unconditional notification to " . $target_node->name . "\n";
+                    log_debug("transition_node_buildnode: " . $node->name . " completed, sending unconditional notification to " . $target_node->name);
                     # For unconditional notifications, we could add them to a special array or handle them differently
                     # For now, we'll just log them since they don't affect conditional logic
                 }
@@ -1825,16 +1825,16 @@ sub check_node_ready_buildnode {
 
         if ($node && $node->can('get_notifies_on_success')) {
             my @notify_targets = @{ $node->get_notifies_on_success() || [] };
-            print "[DEBUG] transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " success notification targets\n";
+            log_debug("transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " success notification targets");
             for my $target_node (@notify_targets) {
                 if ($target_node) {
                     if (is_successful_completion_status($new_status)) {
                         # Node succeeded, mark as true in target's success_notify array
-                        print "[DEBUG] transition_node_buildnode: " . $node->name . " succeeded, updating success_notify for " . $target_node->name . "\n";
+                        log_debug("transition_node_buildnode: " . $node->name . " succeeded, updating success_notify for " . $target_node->name);
                         $target_node->update_success_notify($node, 1);  # Mark as true
                     } else {
                         # Node failed, mark as false in target's success_notify array
-                        print "[DEBUG] transition_node_buildnode: " . $node->name . " failed, updating success_notify for " . $target_node->name . "\n";
+                        log_debug("transition_node_buildnode: " . $node->name . " failed, updating success_notify for " . $target_node->name);
                         $target_node->update_success_notify($node, 0);  # Mark as false
                     }
                 }
@@ -1843,16 +1843,16 @@ sub check_node_ready_buildnode {
 
         if ($node && $node->can('get_notifies_on_failure')) {
             my @notify_targets = @{ $node->get_notifies_on_failure() || [] };
-            print "[DEBUG] transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " failure notification targets\n";
+            log_debug("transition_node_buildnode: " . $node->name . " has " . scalar(@notify_targets) . " failure notification targets");
             for my $target_node (@notify_targets) {
                 if ($target_node) {
                     if ($new_status eq 'failed') {
                         # Node failed, mark as true in target's failure_notify array
-                        print "[DEBUG] transition_node_buildnode: " . $node->name . " failed, updating failure_notify for " . $target_node->name . "\n";
+                        log_debug("transition_node_buildnode: " . $node->name . " failed, updating failure_notify for " . $target_node->name);
                         $target_node->update_failure_notify($node, 1);  # Mark as true
                     } else {
                         # Node succeeded, mark as false in target's failure_notify array
-                        print "[DEBUG] transition_node_buildnode: " . $node->name . " succeeded, updating failure_notify for " . $target_node->name . "\n";
+                        log_debug("transition_node_buildnode: " . $node->name . " succeeded, updating failure_notify for " . $target_node->name);
                         $target_node->update_failure_notify($node, 0);  # Mark as false
                     }
                 }
@@ -1955,11 +1955,11 @@ sub check_node_ready_buildnode {
                 # Debug output
                 my $success_array = $node->success_notify;
                 my $failure_array = $node->failure_notify;
-                print "[DEBUG] Node " . $node->name . " conditional check:\n";
-                print "[DEBUG]   success_notify: " . scalar(@$success_array) . " entries\n";
-                print "[DEBUG]   failure_notify: " . scalar(@$failure_array) . " entries\n";
-                print "[DEBUG]   success_state: " . ($success_state == 1 ? "met" : $success_state == 0 ? "not-met" : "not-run") . "\n";
-                print "[DEBUG]   failure_state: " . ($failure_state == 1 ? "met" : $failure_state == 0 ? "not-met" : "not-run") . "\n";
+                log_debug("Node " . $node->name . " conditional check:");
+                log_debug("  success_notify: " . scalar(@$success_array) . " entries");
+                log_debug("  failure_notify: " . scalar(@$failure_array) . " entries");
+                log_debug("  success_state: " . ($success_state == 1 ? "met" : $success_state == 0 ? "not-met" : "not-run"));
+                log_debug("  failure_state: " . ($failure_state == 1 ? "met" : $failure_state == 0 ? "not-met" : "not-run"));
                 
                 # Node runs if:
                 # 1. All notifications have happened (no -1 in either array)
@@ -1967,8 +1967,8 @@ sub check_node_ready_buildnode {
                 my $all_notifications_complete = ($success_state != -1) && ($failure_state != -1);
                 my $conditions_met = ($success_state == 1) || ($failure_state == 1);
                 
-                print "[DEBUG]   all_notifications_complete: " . ($all_notifications_complete ? "true" : "false") . "\n";
-                print "[DEBUG]   conditions_met: " . ($conditions_met ? "true" : "false") . "\n";
+                log_debug("  all_notifications_complete: " . ($all_notifications_complete ? "true" : "false"));
+                log_debug("  conditions_met: " . ($conditions_met ? "true" : "false"));
                 
                 return $all_notifications_complete && $conditions_met;
             }
@@ -2047,12 +2047,12 @@ sub check_node_ready_buildnode {
             
             # Check if this node has no dependencies
             my @dependencies = @{ $node->dependencies || [] };
-            print "[DEBUG] Node " . $node->name . " has " . scalar(@dependencies) . " dependencies\n";
+            log_debug("Node " . $node->name . " has " . scalar(@dependencies) . " dependencies");
             if (@dependencies == 0) {
                 # No structural dependencies - check if it's conditional
                 if ($node->conditional) {
                     # Conditional node - check if notification conditions are met
-                    print "[DEBUG] Checking conditional node " . $node->name . " for readiness\n";
+                    log_debug("Checking conditional node " . $node->name . " for readiness");
                     my $notifications_ok = check_notifications_succeeded_buildnode($node, $status_ref);
                     if ($notifications_ok) {
                         # All conditions met = ready for execution
@@ -2101,7 +2101,7 @@ sub check_node_ready_buildnode {
                     # All structural dependencies satisfied - check if it's conditional
                     if ($node->conditional) {
                         # Conditional node - check if notification conditions are met
-                        print "[DEBUG] Checking conditional node " . $node->name . " with dependencies for readiness\n";
+                        log_debug("Checking conditional node " . $node->name . " with dependencies for readiness");
                         my $notifications_ok = check_notifications_succeeded_buildnode($node, $status_ref);
                         if ($notifications_ok) {
                             # All conditions met = ready for execution
@@ -2297,12 +2297,12 @@ sub phase2_execution_preparation {
         # Additional debug for conditional nodes
         if ($node->conditional) {
             my $has_parents = $node->has_any_parents() ? 'YES' : 'NO';
-            print "[DEBUG] phase2_execution_preparation: Conditional node " . $node->name . " has_parents: $has_parents\n";
+            log_debug("phase2_execution_preparation: Conditional node " . $node->name . " has_parents: $has_parents");
             if ($node->has_any_parents()) {
                 my $parents = $node->get_parents;
-                print "[DEBUG] phase2_execution_preparation: Conditional node " . $node->name . " has " . scalar(@$parents) . " parents\n";
+                log_debug("phase2_execution_preparation: Conditional node " . $node->name . " has " . scalar(@$parents) . " parents");
                 for my $parent (@$parents) {
-                    print "[DEBUG] phase2_execution_preparation:   Parent: " . $parent->name . "\n";
+                    log_debug("phase2_execution_preparation:   Parent: " . $parent->name);
                 }
             }
         }
@@ -2387,14 +2387,14 @@ sub phase2_execution_preparation {
         # Additional check for conditional nodes - this overrides the parent/children logic
         if ($node->conditional) {
             # Conditional node - check if notification conditions are met
-            print "[DEBUG] phase2_execution_preparation: Checking conditional node " . $node->name . " for readiness\n";
+            log_debug("phase2_execution_preparation: Checking conditional node " . $node->name . " for readiness");
             my $notifications_ok = check_notifications_succeeded_buildnode($node, $STATUS_MANAGER->{status});
             if (!$notifications_ok) {
                 $ready_for_execution = 0;
-                print "[DEBUG] phase2_execution_preparation: Conditional node " . $node->name . " conditions not met, staying in RPP\n";
+                log_debug("phase2_execution_preparation: Conditional node " . $node->name . " conditions not met, staying in RPP");
             } else {
                 $ready_for_execution = 1;
-                print "[DEBUG] phase2_execution_preparation: Conditional node " . $node->name . " conditions met, ready for execution\n";
+                log_debug("phase2_execution_preparation: Conditional node " . $node->name . " conditions met, ready for execution");
             }
         }
         
@@ -2920,11 +2920,11 @@ sub print_build_summary {
             my $root_node = $group_roots[0] || $root_nodes[0];
             
             if ($VERBOSITY_LEVEL >= 3) {
-                print "  [DEBUG] Root nodes found: " . scalar(@root_nodes) . "\n";
+                log_debug("Root nodes found: " . scalar(@root_nodes));
                 for my $root (@root_nodes) {
-                    print "    [DEBUG] Root: " . $root->name . "\n";
+                    log_debug("  Root: " . $root->name);
                 }
-                print "  [DEBUG] Selected root node: " . $root_node->name . "\n";
+                log_debug("Selected root node: " . $root_node->name);
             }
             print_enhanced_tree($root_node, $REGISTRY, { show_notifications => 1 });
         } else {

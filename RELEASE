@@ -1,0 +1,22 @@
+Version 1.0.0
+
+Current Release: 1.0.0
+
+This is the initial stable release of the Distributed Build System (DBS).
+
+Key Features:
+- Dependency management with automatic resolution and ordering
+- Parallel execution of independent tasks
+- Cross-platform build support
+- Comprehensive logging with verbosity controls
+- Build configuration validation and cycle detection
+- Flexible YAML-based configuration with inheritance
+- Three-phase execution system (coordination, preparation, execution)
+- Conditional notifications and dependency tracking
+
+Verbosity Levels:
+- Quiet (--quiet): Minimal output
+- Normal (default): Standard build output
+- Verbose (--verbose): Additional information
+- Debug (--debug): Detailed debug messages
+

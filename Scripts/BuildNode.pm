@@ -49,15 +49,15 @@ sub new {
     
     # Debug: check if parents field is being set incorrectly during construction (only at high verbosity)
     if ($BuildUtils::VERBOSITY_LEVEL >= 3 && exists $fields{parents} && ref($fields{parents}) eq 'ARRAY' && @{$fields{parents}}) {
-        print STDERR "[BUILDNODE-DEBUG] Node '$fields{name}' constructed with " . scalar(@{$fields{parents}}) . " parents:\n";
+        log_debug("BUILDNODE-DEBUG: Node '$fields{name}' constructed with " . scalar(@{$fields{parents}}) . " parents:");
         for my $i (0..$#{$fields{parents}}) {
             my $parent = $fields{parents}->[$i];
             if (ref($parent) && blessed($parent) && $parent->can('name')) {
-                print STDERR "  [$i] BuildNode: " . $parent->name . "\n";
+                log_debug("  [$i] BuildNode: " . $parent->name);
             } elsif (ref($parent) eq 'ARRAY') {
-                print STDERR "  [$i] ARRAY: [" . join(',', @$parent) . "]\n";
+                log_debug("  [$i] ARRAY: [" . join(',', @$parent) . "]");
             } else {
-                print STDERR "  [$i] " . ref($parent) . ": " . (defined($parent) ? "object" : "undef") . "\n";
+                log_debug("  [$i] " . ref($parent) . ": " . (defined($parent) ? "object" : "undef"));
             }
         }
     }
@@ -131,45 +131,45 @@ sub add_failure_notify {
 sub update_success_notify {
     my ($self, $node_ref, $status) = @_;
     my $success_array = $self->{success_notify} || [];
-    print "[DEBUG] update_success_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s success_notify array\n";
-    print "[DEBUG] update_success_notify: Array has " . scalar(@$success_array) . " entries\n";
+    log_debug("update_success_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s success_notify array");
+    log_debug("update_success_notify: Array has " . scalar(@$success_array) . " entries");
     for my $i (0..$#$success_array) {
         my $entry = $success_array->[$i];
-        print "[DEBUG] update_success_notify: Checking entry $i\n";
+        log_debug("update_success_notify: Checking entry $i");
         if (refaddr($entry->{node}) == refaddr($node_ref)) {
             if ($status) {
                 $entry->{status} = 1;  # Mark as true
-                print "[DEBUG] update_success_notify: Updated " . $entry->{node}->name . " to status 1\n";
+                log_debug("update_success_notify: Updated " . $entry->{node}->name . " to status 1");
             } else {
                 $entry->{status} = -1;  # Mark as not-met
-                print "[DEBUG] update_success_notify: Updated " . $entry->{node}->name . " to status -1\n";
+                log_debug("update_success_notify: Updated " . $entry->{node}->name . " to status -1");
             }
             return;
         }
     }
-    print "[DEBUG] update_success_notify: Could not find " . $node_ref->name . " in array\n";
+    log_debug("update_success_notify: Could not find " . $node_ref->name . " in array");
 }
 
 sub update_failure_notify {
     my ($self, $node_ref, $status) = @_;
     my $failure_array = $self->{failure_notify} || [];
-    print "[DEBUG] update_failure_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s failure_notify array\n";
-    print "[DEBUG] update_failure_notify: Array has " . scalar(@$failure_array) . " entries\n";
+    log_debug("update_failure_notify: Looking for " . $node_ref->name . " in " . $self->name . "'s failure_notify array");
+    log_debug("update_failure_notify: Array has " . scalar(@$failure_array) . " entries");
     for my $i (0..$#$failure_array) {
         my $entry = $failure_array->[$i];
-        print "[DEBUG] update_failure_notify: Checking entry $i\n";
+        log_debug("update_failure_notify: Checking entry $i");
         if (refaddr($entry->{node}) == refaddr($node_ref)) {
             if ($status) {
                 $entry->{status} = 1;  # Mark as true
-                print "[DEBUG] update_failure_notify: Updated " . $entry->{node}->name . " to status 1\n";
+                log_debug("update_failure_notify: Updated " . $entry->{node}->name . " to status 1");
             } else {
                 $entry->{status} = -1;  # Mark as not-met
-                print "[DEBUG] update_failure_notify: Updated " . $entry->{node}->name . " to status -1\n";
+                log_debug("update_failure_notify: Updated " . $entry->{node}->name . " to status -1");
             }
             return;
         }
     }
-    print "[DEBUG] update_failure_notify: Could not find " . $node_ref->name . " in array\n";
+    log_debug("update_failure_notify: Could not find " . $node_ref->name . " in array");
 }
 
 sub all_success_conditions_met {
@@ -179,7 +179,7 @@ sub all_success_conditions_met {
     
     # Check if any entries are still "not-run" (status 0)
     for my $entry (@$success_array) {
-        print "[DEBUG] all_success_conditions_met: Entry has status " . $entry->{status} . "\n";
+        log_debug("all_success_conditions_met: Entry has status " . $entry->{status});
         return -1 if $entry->{status} == 0;  # Still waiting for this notifier
     }
     
@@ -198,7 +198,7 @@ sub all_failure_conditions_met {
     
     # Check if any entries are still "not-run" (status 0)
     for my $entry (@$failure_array) {
-        print "[DEBUG] all_failure_conditions_met: Entry has status " . $entry->{status} . "\n";
+        log_debug("all_failure_conditions_met: Entry has status " . $entry->{status});
         return -1 if $entry->{status} == 0;  # Still waiting for this notifier
     }
     
@@ -393,12 +393,12 @@ sub depends_on {
         if (ref($dep)) {
             # Direct dependency
             if ($dep->key eq $target->key) {
-                print STDERR "[DEPENDS_ON] " . $self->name . " directly depends on " . $target->name . "\n";
+                log_debug("DEPENDS_ON: " . $self->name . " directly depends on " . $target->name);
                 return 1;
             }
             # Indirect dependency
             if ($dep->depends_on($target, $visited)) {
-                print STDERR "[DEPENDS_ON] " . $self->name . " indirectly depends on " . $target->name . " via " . $dep->name . "\n";
+                log_debug("DEPENDS_ON: " . $self->name . " indirectly depends on " . $target->name . " via " . $dep->name);
                 return 1;
             }
         }
@@ -1458,16 +1458,16 @@ sub get_external_dependencies {
         
         # DEBUG TEST: If highest # of children complete is higher than my id, exit/fail and output what the $self->children contains
         if ($children_completed > $my_child_id) {
-            print STDERR "[DEBUG] should_coordinate_next: FAILURE - children_completed ($children_completed) > my_child_id ($my_child_id) for node " . $self->name . "\n";
-            print STDERR "[DEBUG] Parent: " . $parent->name . "\n";
-            print STDERR "[DEBUG] Parent's children:\n";
+            log_debug("should_coordinate_next: FAILURE - children_completed ($children_completed) > my_child_id ($my_child_id) for node " . $self->name);
+            log_debug("Parent: " . $parent->name);
+            log_debug("Parent's children:");
             for my $i (0..$#{$parent->children // []}) {
                 my $child = $parent->children->[$i];
                 my $child_status = $main::STATUS_MANAGER->get_status($child);
                 my $child_order = $child->get_child_order // 0;
-                print STDERR "  [$i] " . $child->name . " (order: $child_order, status: $child_status)\n";
+                log_debug("  [$i] " . $child->name . " (order: $child_order, status: $child_status)");
             }
-            print STDERR "[DEBUG] End of parent's children list\n";
+            log_debug("End of parent's children list");
             return 0;
         }
         

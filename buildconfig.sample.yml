@@ -11,9 +11,9 @@
 #   but ONLY if it is included in the build order (either explicitly as a target or as a dependency).
 #   If a platform or task is not in the build order, always_run has no effect.
 # Sample build configuration
-project_name: CarManager
+project_name: MyProject
 # scheme: The Xcode scheme to build for this platform (if applicable)
-scheme: CarManager macOS
+scheme: MyProject macOS
 exclude_from_globals:
   - tasks
   - platforms
@@ -43,14 +43,14 @@ platforms:
     artifact_dir: build/ios
     artifact_patterns:
       - build/ios/*.ipa
-    project_name: CarManager iOS
-    scheme: CarManager iOS
+    project_name: MyProject iOS
+    scheme: MyProject iOS
   - name: Android
     build_command: ./gradlew assembleRelease -PprojectName="${project_name}"
     artifact_dir: build/android
     artifact_patterns:
       - build/android/*.apk
-    project_name: CarManagerAndroid
+    project_name: MyProjectAndroid
     # no scheme needed
   - name: macOS_tests
     scheme: "SampleProjectTests macOS"

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Prerequisite installer for CarManager build system
+# Prerequisite installer for Distributed Build System (DBS)
 # Installs all required Homebrew packages for development and CI
 
 set -e
