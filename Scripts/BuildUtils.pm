@@ -1070,6 +1070,20 @@ Yields (returns a list of) [$node, \@notified_nodes] for each node in the regist
 
 =cut
 
+# --- Helper: Check if a dependency group is empty ---
+# WHAT: Determines if a dependency group has no actual dependency children
+# HOW: Checks if the node is a dependency group and has no children
+# WHY: Allows filtering out empty dependency groups from display
+# INTERNAL: This is an internal utility function
+sub is_empty_dependency_group {
+    my ($node) = @_;
+    return 0 unless $node && ref($node) && $node->can('is_dependency_group');
+    return 0 unless $node->is_dependency_group;
+    # An empty dependency group has no children
+    my $children = $node->can('children') ? $node->children : [];
+    return scalar(@$children) == 0;
+}
+
 # --- Unified Output Utility ---
 # print_node_tree($root, $registry, %opts): prints tree, build order, notifications as requested
 sub print_node_tree {
@@ -1092,6 +1106,8 @@ sub print_node_tree {
         
         my $key = $node->key;  # Use node key directly for display/tracking purposes
         return if $seen{$key}++;
+        # Filter out empty dependency groups from display
+        return if is_empty_dependency_group($node);
         my $is_group = $node->is_group;
         my $is_parallel = $is_group && ($node->continue_on_error || $node->parallel);
         my $is_sequential = $is_group && !$is_parallel;
@@ -1183,9 +1199,11 @@ sub print_node_tree {
             $child_prefix .= '    ';
         }
         unless ($node->is_leaf) {
-            my $n = scalar(@{ $node->children });
+            # Filter out empty dependency groups before iterating to properly calculate $is_last
+            my @filtered_children = grep { !is_empty_dependency_group($_) } @{ $node->children };
+            my $n = scalar(@filtered_children);
             for (my $i = 0; $i < $n; $i++) {
-                my $child = $node->children->[$i];
+                my $child = $filtered_children[$i];
                 $print_tree->($child, $child_prefix, $i == $n - 1, $is_parallel);
             }
         }
@@ -1287,6 +1305,8 @@ sub _print_tree_traversal {
         }
         my $key = get_key_from_node($node);
         return if $seen{$key}++;
+        # Filter out empty dependency groups from display
+        return if is_empty_dependency_group($node);
         
         my $label = format_node($node, 'default');
         my @dep_lines;
@@ -1350,7 +1370,11 @@ sub _print_tree_traversal {
         print "$_\n" for @dep_lines;
         
         unless ($node->is_leaf) {
-            for my $child (@{ $node->children }) {
+            # Filter out empty dependency groups before iterating
+            my @filtered_children = grep { 
+                ref($_) && UNIVERSAL::can($_, 'name') && !is_empty_dependency_group($_)
+            } @{ $node->children };
+            for my $child (@filtered_children) {
                         unless (ref($child) && UNIVERSAL::can($child, 'name')) {
             log_warn("print_enhanced_tree: Node '" . $node->name . "' has non-BuildNode child. Type: " . (ref($child) || 'SCALAR') . ", Value: $child. Skipping.");
             next;
@@ -2623,6 +2647,8 @@ sub print_final_build_order {
     $parent_is_parallel //= 0;
     $default_target //= '';
     return unless $node;
+    # Filter out empty dependency groups from display
+    return if is_empty_dependency_group($node);
     my $is_group = $node->is_group;
     my $is_parallel = $is_group && ($node->continue_on_error || $node->parallel);
     my $is_sequential = $is_group && !$is_parallel;
@@ -2745,9 +2771,11 @@ sub print_final_build_order {
     
     # Show children (if any)
     unless ($node->is_leaf) {
-        my $n = scalar(@{ $node->children });
+        # Filter out empty dependency groups before iterating to properly calculate $is_last
+        my @filtered_children = grep { !is_empty_dependency_group($_) } @{ $node->children };
+        my $n = scalar(@filtered_children);
         for (my $i = 0; $i < $n; $i++) {
-            my $child = $node->children->[$i];
+            my $child = $filtered_children[$i];
             print_final_build_order($child, $child_prefix, $i == $n-1, $is_parallel, $default_target, $all_nodes);
         }
     }
