@@ -3584,7 +3584,8 @@ sub main {
         push @all_durations, $duration_ref;
         
         # Show detailed summary if in display mode, or execution order for single targets
-        if (($display && $current_target eq $display) || $target || $dry_run) {
+        # Print summary for: display mode, explicit target, dry-run, or default target (single target, not in validation mode)
+        if (($display && $current_target eq $display) || $target || $dry_run || (!$IS_VALIDATE && @target_list == 1)) {
             print_build_summary($execution_order_ref, $duration_ref);
         }
         
