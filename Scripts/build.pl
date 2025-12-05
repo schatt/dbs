@@ -2956,7 +2956,8 @@ sub print_build_summary {
     }
     
     # Show execution order for single-target modes (not bulk validation) - final section
-    if ($display || $dry_run || $target) {
+    # Show execution order for: display mode, dry-run, explicit target, or default target (not in validation mode)
+    if ($display || $dry_run || $target || (!$target && !$IS_VALIDATE)) {
         print "\n" . "-" x 60 . "\n";
         print "EXECUTION ORDER\n";
         print "-" x 60 . "\n";

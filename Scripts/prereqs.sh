@@ -40,9 +40,39 @@ for pkg in "${BREW_PACKAGES[@]}"; do
   fi
 done
 
-# Check for Parallel::ForkManager Perl module
-if ! perl -MParallel::ForkManager -e1 2>/dev/null; then
-  echo "Error: Perl module Parallel::ForkManager is not installed. Please install it with 'cpan Parallel::ForkManager' or your preferred Perl package manager."
+# Required Perl modules (non-core modules that need to be installed)
+PERL_MODULES=(
+  "YAML::XS"
+  "JSON"
+  "Parallel::ForkManager"
+  "Term::ANSIColor"
+  "Digest::SHA"
+  "Time::Piece"
+)
+
+# Check for required Perl modules
+MISSING_MODULES=()
+for module in "${PERL_MODULES[@]}"; do
+  if ! perl -M"$module" -e1 2>/dev/null; then
+    MISSING_MODULES+=("$module")
+  else
+    echo "[OK] Perl module $module is installed"
+  fi
+done
+
+# Report missing modules and exit with error if any are missing
+if [ ${#MISSING_MODULES[@]} -gt 0 ]; then
+  echo ""
+  echo "Error: The following required Perl modules are not installed:"
+  for module in "${MISSING_MODULES[@]}"; do
+    echo "  - $module"
+  done
+  echo ""
+  echo "Please install them using one of the following methods:"
+  echo "  cpan install ${MISSING_MODULES[*]}"
+  echo "  or"
+  echo "  cpanm ${MISSING_MODULES[*]}"
+  echo ""
   exit 1
 fi
 
