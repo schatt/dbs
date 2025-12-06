@@ -64,14 +64,41 @@ sub new {
     croak "BuildExecutionEngine: 'status_manager' argument is required" 
         unless $args{status_manager};
     
+    # Use a secure temporary directory if none specified
+    my $default_session_dir = $args{build_session_dir};
+    unless ($default_session_dir) {
+        require File::Temp;
+        $default_session_dir = File::Temp::tempdir(CLEANUP => 0, TMPDIR => 1);
+    }
+    
     my $self = {
         registry          => $args{registry},
         status_manager    => $args{status_manager},
         is_dry_run        => $args{is_dry_run} // 0,
         is_validate       => $args{is_validate} // 0,
-        build_session_dir => $args{build_session_dir} // '/tmp/build_session',
+        build_session_dir => $default_session_dir,
         
         # Callbacks for external functions (dependency injection for testability)
+        # 
+        # transition_node_callback: sub($node, $new_status, $status_hash, $registry)
+        #   Called when a node transitions to a new status
+        #   Args: $node - BuildNode object being transitioned
+        #         $new_status - new status string (e.g., 'done', 'failed', 'validate')
+        #         $status_hash - hash reference from status_manager->{status}
+        #         $registry - BuildNodeRegistry object
+        #   Returns: void
+        #
+        # check_notifications_callback: sub($node, $status_hash)
+        #   Called to check if a conditional node's notification conditions are met
+        #   Args: $node - BuildNode object to check
+        #         $status_hash - hash reference from status_manager->{status}
+        #   Returns: 1 if conditions are met, 0 otherwise
+        #
+        # sanitize_log_name_callback: sub($name)
+        #   Called to sanitize a node name for use in log file names
+        #   Args: $name - string node name to sanitize
+        #   Returns: sanitized string safe for use as filename
+        #
         transition_node_callback         => $args{transition_node_callback},
         check_notifications_callback     => $args{check_notifications_callback},
         sanitize_log_name_callback       => $args{sanitize_log_name_callback},
@@ -555,7 +582,12 @@ sub phase3_actual_execution {
             my $node_count = grep { $_->key eq $node->key } @main::READY_QUEUE_NODES;
             log_error("  This node appears $node_count times in ready queue");
             
-            die "Queue management bug detected - completed node found in ready queue\n";
+            log_error("");
+            log_error("RECOVERY: This error indicates a bug in the build system, not in your build configuration.");
+            log_error("Please report this issue with the above debug information.");
+            log_error("As a workaround, try running the build again - the issue may be transient.");
+            
+            die "Queue management bug detected - completed node found in ready queue. See error log for debug info.\n";
         }
         
         log_debug("phase3_actual_execution: executing node " . $node->name);
@@ -620,6 +652,10 @@ sub _execute_node {
             my $timestamp = localtime();
             $self->_log_command_execution($node, $expanded_cmd, undef, $log_file);
             
+            # NOTE: Commands are executed via shell by design - they come from trusted build 
+            # configuration files authored by the user. This is intentional as build systems 
+            # require shell command execution capabilities. The expand_command_args function
+            # only expands ${variable} placeholders with values from the build config.
             my $result;
             if ($BuildUtils::VERBOSITY_LEVEL == 0) {
                 # Quiet mode: redirect all output to log files only
