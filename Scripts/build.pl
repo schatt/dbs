@@ -50,7 +50,7 @@ BEGIN {
 }
 
 # All use statements at the top - proper Perl practice
-use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL handle_result_hash print_enhanced_tree print_node_tree build_graph_with_worklist print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order add_to_ready_queue add_to_groups_ready is_node_in_groups_ready get_eligible_pending_parent_nodes has_ready_nodes get_next_ready_node remove_from_ready_queue remove_from_groups_ready remove_from_ready_pending_parent get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes is_successful_completion_status);
+use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nodes expand_command_args get_node_by_key enumerate_notifications log_info log_warn log_error log_success log_debug log_verbose log_time $VERBOSITY_LEVEL handle_result_hash print_enhanced_tree print_node_tree build_graph_with_worklist print_validation_summary print_parallel_build_order inject_sequential_group_dependencies inject_sequential_dependencies_for_dependencies load_config_entry extract_target_info apply_category_defaults extract_category_defaults extract_all_category_defaults print_final_build_order print_build_order_legend print_true_build_order add_to_ready_queue add_to_groups_ready is_node_in_groups_ready get_eligible_pending_parent_nodes has_ready_nodes get_next_ready_node remove_from_ready_queue remove_from_groups_ready remove_from_ready_pending_parent get_ready_pending_parent_size get_groups_ready_size get_ready_queue_size get_total_queue_sizes is_successful_completion_status is_empty_dependency_group);
 use BuildStatusManager;
 use BuildNode;
 use BuildNodeRegistry;
@@ -2964,11 +2964,21 @@ sub print_build_summary {
         
         # Show actual execution order for all modes
         if ($execution_order_ref && @$execution_order_ref > 0) {
-            # Show actual execution order for dry-run or target modes
+            # Filter out empty dependency groups and track display index separately
+            my $display_index = 0;
             for my $i (0 .. $#$execution_order_ref) {
                 my $execution_entry = $execution_order_ref->[$i];
                 # Execution order now contains hashes with node information
                 if (ref($execution_entry) eq 'HASH' && exists $execution_entry->{node_name}) {
+                    # Skip empty dependency groups
+                    if (exists $execution_entry->{node_key} && $REGISTRY) {
+                        my $node = $REGISTRY->get_node_by_key($execution_entry->{node_key});
+                        if ($node && is_empty_dependency_group($node)) {
+                            next; # Skip this entry
+                        }
+                    }
+                    
+                    $display_index++;
                     my $display_status = $execution_entry->{status};
                     my $display_timestamp = $execution_entry->{timestamp};
                     
@@ -2993,13 +3003,14 @@ sub print_build_summary {
                     }
                     
                     print sprintf("%2d. %s (%s at +%ds)\n", 
-                        $i + 1, 
+                        $display_index, 
                         $execution_entry->{node_name}, 
                         $display_status,
                         $display_timestamp);
                 } else {
                     # Fallback for backward compatibility
-                    print sprintf("%2d. %s (unknown format)\n", $i + 1, ref($execution_entry));
+                    $display_index++;
+                    print sprintf("%2d. %s (unknown format)\n", $display_index, ref($execution_entry));
                 }
             }
         } else {
