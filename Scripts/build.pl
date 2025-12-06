@@ -54,6 +54,7 @@ use BuildUtils qw(merge_args node_key get_key_from_node format_node traverse_nod
 use BuildStatusManager;
 use BuildNode;
 use BuildNodeRegistry;
+use BuildExecutionEngine;
 
 # Declare global variables
 our $STATUS_MANAGER; # Global status manager instance
@@ -2598,7 +2599,31 @@ sub phase3_actual_execution {
 }
 
 # --- Build Node Execution Engine (DRY: handles both execution and validation) ---
+# This function now delegates to BuildExecutionEngine for the main execution loop
 sub execute_build_nodes {
+    # Use global registry - no parameters needed
+    
+    # Create the execution engine with all required dependencies
+    my $engine = BuildExecutionEngine->new(
+        registry                     => $REGISTRY,
+        status_manager               => $STATUS_MANAGER,
+        is_dry_run                   => $IS_DRY_RUN,
+        is_validate                  => $IS_VALIDATE,
+        build_session_dir            => $BUILD_SESSION_DIR,
+        # Inject callbacks for functions that need access to build.pl internals
+        transition_node_callback     => \&transition_node_buildnode,
+        check_notifications_callback => \&check_notifications_succeeded_buildnode,
+        sanitize_log_name_callback   => \&sanitize_log_name,
+    );
+    
+    # Execute using the engine and return results
+    return $engine->execute();
+}
+
+# --- Legacy execution loop code (preserved for reference, now handled by BuildExecutionEngine) ---
+# The following code is kept for backward compatibility and as a reference implementation.
+# The actual execution is now handled by BuildExecutionEngine::execute()
+sub _legacy_execute_build_nodes {
     # Use global registry - no parameters needed
     
     # Use global execution mode flags
