@@ -403,15 +403,44 @@ sub generate_node_key {
 sub get_or_create_node {
     my ($name, $args, $parent_key, $parent_node, $relationship, $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, $instance_spec, $dedupe_nodes) = @_;
     
-    # Look up existing node by name and args first - but only when deduplication is enabled
-    # Regular tasks should be allowed to exist in multiple parent contexts
-    my $existing_node;
-    if ($dedupe_nodes) {
-        $existing_node = $registry->get_node_by_name_and_args($name, $args);
-        if ($existing_node) {
-            log_debug("Found existing deduplicated node: $name");
-            return $existing_node;
+    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+        my $dedupe_str = defined($dedupe_nodes) ? ($dedupe_nodes ? "YES (deduplicate)" : "NO (no deduplication)") : "undef (no deduplication)";
+        log_debug("get_or_create_node: name=$name, relationship=$relationship, dedupe_nodes=$dedupe_str");
+    }
+    
+    # Look up existing node by name and args first
+    # When dedupe_nodes=1: Always check for existing node (for dependencies/notifications)
+    # When dedupe_nodes=undef: Also check for existing node to allow notifications to dedupe to explicit targets
+    # This allows a notification target to reuse an explicit target node, and vice versa
+    my $existing_node = $registry->get_node_by_name_and_args($name, $args);
+    if ($existing_node) {
+        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+            log_debug("Found existing node: $name (key: " . $existing_node->key . ", requested dedupe_nodes=" . (defined($dedupe_nodes) ? $dedupe_nodes : "undef") . ")");
         }
+        
+        # If the existing node has a different key variant, register it under the requested key as well
+        # This allows the node to be found by both key variants
+        # Generate the requested key the same way get_node_by_name_and_args does
+        my @key_parts = ($name);
+        if ($args && ref($args) eq 'HASH' && %$args) {
+            my @arg_parts;
+            for my $arg_key (sort keys %$args) {
+                my $arg_value = $args->{$arg_key};
+                push @arg_parts, "$arg_key=$arg_value";
+            }
+            push @key_parts, join(',', @arg_parts) if @arg_parts;
+        }
+        my $base_key = join('|', @key_parts);
+        my $requested_key = $dedupe_nodes ? "$base_key|dep" : $base_key;
+        
+        if ($existing_node->key ne $requested_key) {
+            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                log_debug("  Registering existing node under alternate key: $requested_key (existing key: " . $existing_node->key . ")");
+            }
+            $registry->add_node_with_key($requested_key, $existing_node);
+        }
+        
+        return $existing_node;
     }
     
     # Load the config entry to create new node
@@ -423,14 +452,28 @@ sub get_or_create_node {
     
     # Create a new node
     log_debug("Creating new node: $name");
+    # Generate canonical key from name and args (same way registry does it)
+    my @key_parts = ($name);
+    if (%merged_args) {
+        my @arg_parts;
+        for my $arg_key (sort keys %merged_args) {
+            my $arg_value = $merged_args{$arg_key};
+            push @arg_parts, "$arg_key=$arg_value";
+        }
+        push @key_parts, join(',', @arg_parts) if @arg_parts;
+    }
+    my $base_key = join('|', @key_parts);
     # Add "dep" flag to canonical key for deduplicated nodes to enable deduplication
-    my $canonical_key = $dedupe_nodes ? "$name|dep" : $name;
+    my $canonical_key = $dedupe_nodes ? "$base_key|dep" : $base_key;
+    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+        log_debug("  canonical_key will be: $canonical_key (dedupe_nodes=" . (defined($dedupe_nodes) ? $dedupe_nodes : "undef") . ")");
+    }
     my $node = build_and_register_node($entry, \%merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $dedupe_nodes);
     return undef unless $node;
     
     # Add new node to worklist for processing
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        log_debug("Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ")");
+        log_debug("Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ", key: " . $node->key . ")");
     }
     
     
@@ -2019,10 +2062,14 @@ sub build_graph_with_worklist {
                         # Create/find the child node (single call, no recursion)
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
                             log_debug("Processing child '$child_name' with parent '" . $node->name . "' (child_order: $child_order, parent: " . $node->name . ")");
+                            log_debug("  get_or_create_node called with dedupe_nodes=undef (explicit target, no deduplication)");
                         }
                         my $child_node = get_or_create_node($child_name, $child_merged_args, $node->key, $node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, \@worklist, $child_instance);
                         
                         if ($child_node) {
+                            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                                log_debug("  Created/found child node: " . $child_node->name . " with key: " . $child_node->key);
+                            }
                                                     # Special case: if this is a dependency group, set child_order to 0
                         if ($child_node->name =~ /_dependency_group$/) {
                             $child_node->set_child_order(0, $node);
@@ -2043,6 +2090,13 @@ sub build_graph_with_worklist {
                             log_debug("Child " . $child_node->name . " has " . scalar(@$parents) . " parents: " . join(", ", map { $_->name } @$parents));
                         }
                         process_node_relationships_immediately($node, $child_node, 'child', $registry);
+                        
+                        # Verify parent-child relationship was established
+                        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                            my $parents_after = $child_node->get_clean_parents();
+                            log_debug("  After process_node_relationships_immediately: child " . $child_node->name . " has " . scalar(@$parents_after) . " parents: " . join(", ", map { $_->name } @$parents_after));
+                        }
+                        
                         # Register parent as a completion_notify target for the child
                         $child_node->add_completion_notify_target($node);
                         $node->expect_completion_from($child_node);

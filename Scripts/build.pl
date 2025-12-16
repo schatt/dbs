@@ -2296,6 +2296,20 @@ sub phase1_coordination {
         # Root nodes (no parents) should always be able to coordinate
         my $can_coordinate = $node->should_coordinate_next(\%GROUPS_READY_NODES);
         
+        # CRITICAL: Conditional notification targets should NOT coordinate until notified
+        # If they have children, allowing coordination before notification would cause premature execution
+        my $notifications_ok_for_coordination = 1;
+        if ($node->conditional) {
+            # For conditional nodes, check if notification conditions are met before allowing coordination
+            my $notifications_ok = check_notifications_succeeded_buildnode($node, $STATUS_MANAGER->{status});
+            if (!$notifications_ok) {
+                $notifications_ok_for_coordination = 0;
+                if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                    log_debug("phase1_coordination: node " . $node->name . " is conditional notification target, notification conditions not met - cannot coordinate yet");
+                }
+            }
+        }
+        
         if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
             if (!$dependencies_satisfied) {
                 log_debug("phase1_coordination: node " . $node->name . " dependencies not satisfied");
@@ -2303,23 +2317,47 @@ sub phase1_coordination {
             if (!$can_coordinate) {
                 log_debug("phase1_coordination: node " . $node->name . " cannot coordinate");
             }
+            if (!$notifications_ok_for_coordination) {
+                log_debug("phase1_coordination: node " . $node->name . " notification conditions not met for coordination");
+            }
         }
         
-        # If dependencies are satisfied AND node can coordinate, copy to groups_ready
-        if ($dependencies_satisfied && $can_coordinate) {
+        # If dependencies are satisfied AND node can coordinate AND notification conditions are met (if conditional), copy to groups_ready
+        if ($dependencies_satisfied && $can_coordinate && $notifications_ok_for_coordination) {
             add_to_groups_ready($node);
             $nodes_copied++;
             log_debug("phase1_coordination: copied node " . $node->name . " to groups_ready");
             
             # OPTIMIZATION: If node has an auto-generated dependency group, automatically copy it to GR
+            # But only if the dependency group can also coordinate (dependencies satisfied, can coordinate)
             if ($node->can('children') && $node->children && ref($node->children) eq 'ARRAY') {
                 for my $child (@{$node->children}) {
                     if (($child->get_child_order($node) // 0) == 0) {  # dependency group (child_id 0)
                         my $dep_group_status = $STATUS_MANAGER->get_status($child);
                         if ($dep_group_status eq 'pending') {
-                            add_to_groups_ready($child);
-                            $nodes_copied++;
-                            log_debug("phase1_coordination: OPTIMIZATION: auto-copied dependency group " . $child->name . " to groups_ready");
+                            # Check if dependency group can coordinate (same checks as parent)
+                            my $dep_group_deps = $child->get_external_dependencies;
+                            my $dep_group_deps_satisfied = 1;
+                            for my $dep_node (@$dep_group_deps) {
+                                my $dep_status = $STATUS_MANAGER->get_status($dep_node);
+                                if ($dep_status ne 'done' && $dep_status ne 'skipped') {
+                                    $dep_group_deps_satisfied = 0;
+                                    last;
+                                }
+                            }
+                            
+                            # Dependency groups can coordinate when parent is in GR (which we just added)
+                            my $dep_group_can_coordinate = $child->should_coordinate_next(\%GROUPS_READY_NODES);
+                            
+                            if ($dep_group_deps_satisfied && $dep_group_can_coordinate) {
+                                add_to_groups_ready($child);
+                                $nodes_copied++;
+                                log_debug("phase1_coordination: OPTIMIZATION: auto-copied dependency group " . $child->name . " to groups_ready");
+                            } else {
+                                if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                                    log_debug("phase1_coordination: dependency group " . $child->name . " cannot be auto-added: deps_satisfied=$dep_group_deps_satisfied, can_coordinate=$dep_group_can_coordinate");
+                                }
+                            }
                         }
                     }
                 }

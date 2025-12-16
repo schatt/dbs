@@ -1435,16 +1435,20 @@ sub get_external_dependencies {
         # If no parent, always coordinate next (root nodes)
         return 1 unless $self->parents && @{$self->parents};
         
+        # For nodes with multiple parents (e.g., deduplicated nodes), check if ANY parent in GR allows coordination
+        # This allows a node to coordinate via one parent even if another parent isn't ready yet
+        my $can_coordinate_via_any_parent = 0;
+        
         # Check each parent to see if this node should coordinate next
         for my $parent (@{ $self->get_clean_parents }) {
             my $my_child_id = $self->get_child_order($parent);
             
-            # EARLY EXIT: If parent is not in GR, this node cannot coordinate
+            # Skip parents that are not in GR - they can't coordinate this node yet
             unless (is_node_in_groups_ready($parent, $groups_ready_ref)) {
                 if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                    log_debug("should_coordinate_next: " . $self->name . " cannot coordinate - parent " . $parent->name . " not in groups_ready");
+                    log_debug("should_coordinate_next: " . $self->name . " skipping parent " . $parent->name . " - not in groups_ready");
                 }
-                return 0;  # Cannot coordinate - parent not ready
+                next;  # Skip this parent, check other parents
             }
             
             # If this is a dependency group and parent is in GR, coordinate immediately
@@ -1473,61 +1477,76 @@ sub get_external_dependencies {
                 # For regular children of non-dependency-group parents: check if parent's dependency group is complete
                 unless ($parent->is_dependency_group_complete()) {
                     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                        log_debug("should_coordinate_next: " . $self->name . " cannot coordinate - parent " . $parent->name . "'s dependency group not complete");
+                        log_debug("should_coordinate_next: " . $self->name . " cannot coordinate via parent " . $parent->name . " - dependency group not complete");
                     }
-                    return 0;  # Cannot coordinate until dependency group is complete
+                    next;  # Skip this parent, check other parents
                 }
             }
             
-        # Now proceed with normal coordination logic...
-        my $children_completed = $parent->number_of_children_completed();
-        my $parallel_level = $parent->get_parallel_count();
-        
-        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-            log_debug("should_coordinate_next: " . $self->name . " checking coordination - completed: $children_completed, parallel: $parallel_level, my_child_id: $my_child_id");
-        }
-        
-        # DEBUG TEST: If highest # of children complete is higher than my id, exit/fail and output what the $self->children contains
-        if ($children_completed > $my_child_id) {
-            log_debug("should_coordinate_next: FAILURE - children_completed ($children_completed) > my_child_id ($my_child_id) for node " . $self->name);
-            log_debug("Parent: " . $parent->name);
-            log_debug("Parent's children:");
-            for my $i (0..$#{$parent->children // []}) {
-                my $child = $parent->children->[$i];
-                my $child_status = $main::STATUS_MANAGER->get_status($child);
-                my $child_order = $child->get_child_order($parent) // 0;
-                log_debug("  [$i] " . $child->name . " (order: $child_order, status: $child_status)");
+            # Now proceed with normal coordination logic for this parent...
+            my $children_completed = $parent->number_of_children_completed();
+            my $parallel_level = $parent->get_parallel_count();
+            
+            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                log_debug("should_coordinate_next: " . $self->name . " checking coordination via parent " . $parent->name . " - completed: $children_completed, parallel: $parallel_level, my_child_id: $my_child_id");
             }
-            log_debug("End of parent's children list");
-            return 0;
-        }
-        
+            
+            # DEBUG TEST: If highest # of children complete is higher than my id, exit/fail and output what the $self->children contains
+            if ($children_completed > $my_child_id) {
+                log_debug("should_coordinate_next: FAILURE - children_completed ($children_completed) > my_child_id ($my_child_id) for node " . $self->name);
+                log_debug("Parent: " . $parent->name);
+                log_debug("Parent's children:");
+                for my $i (0..$#{$parent->children // []}) {
+                    my $child = $parent->children->[$i];
+                    my $child_status = $main::STATUS_MANAGER->get_status($child);
+                    my $child_order = $child->get_child_order($parent) // 0;
+                    log_debug("  [$i] " . $child->name . " (order: $child_order, status: $child_status)");
+                }
+                log_debug("End of parent's children list");
+                next;  # Skip this parent, check other parents
+            }
             
             # Check coordination eligibility based on parent type
+            my $can_coordinate_via_this_parent = 0;
             if ($parent->is_parallel()) {
                 # Parallel: check if enough children have completed
-                my $can_coordinate = ($children_completed + $parallel_level) >= $my_child_id;
+                $can_coordinate_via_this_parent = ($children_completed + $parallel_level) >= $my_child_id;
                 if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                    log_debug("should_coordinate_next: " . $self->name . " parallel check - ($children_completed + $parallel_level) >= $my_child_id = " . ($can_coordinate ? "YES" : "NO"));
+                    log_debug("should_coordinate_next: " . $self->name . " parallel check via " . $parent->name . " - ($children_completed + $parallel_level) >= $my_child_id = " . ($can_coordinate_via_this_parent ? "YES" : "NO"));
                 }
-                return $can_coordinate;
-                                    } else {
-                            # Sequential: use single source of truth for coordination logic
-                            my $next_sequential = $self->is_next_sequential_child();
-                            my $math_check = $self->is_sequential_coordination_ready($children_completed);
-                            
-                            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                                if (!$next_sequential || !$math_check) {
-                                    log_debug("should_coordinate_next: " . $self->name . " sequential check failed - next_sequential: " . ($next_sequential ? "YES" : "NO") . ", math_check: " . ($math_check ? "YES" : "NO") . " (completed: $children_completed, my_child_id: $my_child_id)");
-                                }
-                            }
-                            
-                            return ($next_sequential && $math_check);
-                        }
+            } else {
+                # Sequential: use single source of truth for coordination logic
+                # Pass the specific parent we're checking (for nodes with multiple parents)
+                my $math_check = $self->is_sequential_coordination_ready($children_completed, $parent);
+                
+                if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                    if (!$math_check) {
+                        log_debug("should_coordinate_next: " . $self->name . " sequential check via " . $parent->name . " failed - math_check: " . ($math_check ? "YES" : "NO") . " (completed: $children_completed, my_child_id: $my_child_id)");
+                    }
+                }
+                
+                $can_coordinate_via_this_parent = $math_check;
+            }
+            
+            # If this parent allows coordination, we can coordinate (OR logic across parents)
+            if ($can_coordinate_via_this_parent) {
+                if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                    log_debug("should_coordinate_next: " . $self->name . " can coordinate via parent " . $parent->name);
+                }
+                $can_coordinate_via_any_parent = 1;
+                last;  # Found a parent that allows coordination, no need to check others
+            }
+        }
+        
+        if ($can_coordinate_via_any_parent) {
+            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                log_debug("should_coordinate_next: Node " . $self->name . " can coordinate via at least one parent");
+            }
+            return 1;
         }
         
         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-            log_debug("should_coordinate_next: Node " . $self->name . " should NOT coordinate next - waiting for siblings or no capacity");
+            log_debug("should_coordinate_next: Node " . $self->name . " should NOT coordinate next - no parent in GR allows coordination");
         }
         return 0;
     }

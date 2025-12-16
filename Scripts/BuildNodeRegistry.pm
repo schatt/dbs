@@ -83,6 +83,8 @@ sub get_node_by_key {
 }
 
 # Find a node by name and arguments (for external use)
+# This checks both the base key and the |dep variant to allow deduplication
+# between explicit targets and notification/dependency targets
 sub get_node_by_name_and_args {
     my ($self, $name, $args) = @_;
     # Generate the canonical key and look it up
@@ -96,7 +98,23 @@ sub get_node_by_name_and_args {
         push @key_parts, join(',', @arg_parts) if @arg_parts;
     }
     my $canonical_key = join('|', @key_parts);
-    return $self->get_node_by_key($canonical_key);
+    
+    # First try the exact key
+    my $node = $self->get_node_by_key($canonical_key);
+    return $node if $node;
+    
+    # If not found, try with |dep suffix (for deduplication between explicit targets and notifications)
+    my $dep_key = "$canonical_key|dep";
+    $node = $self->get_node_by_key($dep_key);
+    return $node if $node;
+    
+    # If still not found, try without |dep suffix if the key had it
+    if ($canonical_key =~ s/\|dep$//) {
+        $node = $self->get_node_by_key($canonical_key);
+        return $node if $node;
+    }
+    
+    return undef;
 }
 
 # Find nodes by type
