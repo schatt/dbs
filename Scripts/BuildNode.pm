@@ -1440,12 +1440,23 @@ sub get_external_dependencies {
                 return 1;  # Dependency groups can coordinate immediately when parent is in GR
             }
             
-            # For regular children: check if dependency group is complete
-            unless ($parent->is_dependency_group_complete()) {
+            # If parent is a dependency group (parent's child_order == 0), children can coordinate immediately
+            # Dependency groups don't have their own dependency groups - they ARE the dependency group
+            my $parent_child_order = $parent->get_child_order // 999;
+            if ($parent_child_order == 0) {
+                # Parent is a dependency group, so children (starting with child_order 1) can coordinate
+                # Skip the dependency group complete check and proceed to coordination logic
                 if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                    log_debug("should_coordinate_next: " . $self->name . " cannot coordinate - parent " . $parent->name . "'s dependency group not complete");
+                    log_debug("should_coordinate_next: " . $self->name . " parent " . $parent->name . " is a dependency group, children can coordinate");
                 }
-                return 0;  # Cannot coordinate until dependency group is complete
+            } else {
+                # For regular children of non-dependency-group parents: check if parent's dependency group is complete
+                unless ($parent->is_dependency_group_complete()) {
+                    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                        log_debug("should_coordinate_next: " . $self->name . " cannot coordinate - parent " . $parent->name . "'s dependency group not complete");
+                    }
+                    return 0;  # Cannot coordinate until dependency group is complete
+                }
             }
             
         # Now proceed with normal coordination logic...

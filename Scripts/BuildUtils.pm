@@ -1296,6 +1296,15 @@ sub _print_tree_traversal {
     my $show_notifications = $opts->{show_notifications} // 0;
     my %seen;
     
+    # Helper to get registry from all_nodes if it's a registry object
+    my $registry;
+    if (ref($all_nodes) && UNIVERSAL::can($all_nodes, 'has_node')) {
+        $registry = $all_nodes;
+    } elsif (ref($all_nodes) eq 'HASH') {
+        # If it's a hash, we can't look up nodes by key easily, but we can still traverse
+        $registry = undef;
+    }
+    
     my $print_tree;
     $print_tree = sub {
         my ($node, $prefix, $parent) = @_;
@@ -1311,7 +1320,8 @@ sub _print_tree_traversal {
         my $label = format_node($node, 'default');
         my @dep_lines;
         
-        # Explicit dependencies
+        # Explicit dependencies - now we'll show them as nodes, not just annotations
+        # But we still show them as annotations for reference
         if ($node->can('dependencies') && $node->dependencies && @{ $node->dependencies }) {
             for my $dep (@{ $node->dependencies }) {
                 unless (ref($dep) && UNIVERSAL::can($dep, 'name')) {
@@ -1369,17 +1379,67 @@ sub _print_tree_traversal {
         print $prefix . $label . "\n";
         print "$_\n" for @dep_lines;
         
+        # First, traverse children (including dependency groups) - sorted by child_order
         unless ($node->is_leaf) {
             # Filter out empty dependency groups before iterating
             my @filtered_children = grep { 
                 ref($_) && UNIVERSAL::can($_, 'name') && !is_empty_dependency_group($_)
             } @{ $node->children };
-            for my $child (@filtered_children) {
-                        unless (ref($child) && UNIVERSAL::can($child, 'name')) {
-            log_warn("print_enhanced_tree: Node '" . $node->name . "' has non-BuildNode child. Type: " . (ref($child) || 'SCALAR') . ", Value: $child. Skipping.");
-            next;
-        }
+            
+            # Sort children by child_order (dependency groups have child_order=0, regular children have child_order>=1)
+            my @sorted_children = sort { 
+                my $order_a = $a->can('get_child_order') ? ($a->get_child_order // 999) : 999;
+                my $order_b = $b->can('get_child_order') ? ($b->get_child_order // 999) : 999;
+                $order_a <=> $order_b;
+            } @filtered_children;
+            
+            for my $child (@sorted_children) {
+                unless (ref($child) && UNIVERSAL::can($child, 'name')) {
+                    log_warn("print_enhanced_tree: Node '" . $node->name . "' has non-BuildNode child. Type: " . (ref($child) || 'SCALAR') . ", Value: $child. Skipping.");
+                    next;
+                }
                 $print_tree->($child, $prefix . "  ", $node);
+            }
+        }
+        
+        # Then, traverse dependencies that haven't been shown yet
+        # This ensures dependencies appear as nodes, not just as annotations
+        if ($node->can('dependencies') && $node->dependencies && @{ $node->dependencies }) {
+            for my $dep (@{ $node->dependencies }) {
+                unless (ref($dep) && UNIVERSAL::can($dep, 'name')) {
+                    next;
+                }
+                my $dep_key = get_key_from_node($dep);
+                
+                # Skip if already shown
+                next if $seen{$dep_key};
+                
+                # Find the dependency's dependency group parent if it exists
+                my $dep_group_parent = undef;
+                if ($dep->can('parents') && $dep->parents && @{ $dep->parents }) {
+                    # Look for a dependency group parent (name ends with _dependency_group)
+                    for my $parent (@{ $dep->parents }) {
+                        if (ref($parent) && $parent->can('is_dependency_group') && $parent->is_dependency_group) {
+                            $dep_group_parent = $parent;
+                            last;
+                        }
+                    }
+                }
+                
+                # If dependency has a dependency group parent, show the parent first (if not already shown)
+                # The dependency group will then show the dependency as its child
+                if ($dep_group_parent) {
+                    my $dep_group_key = get_key_from_node($dep_group_parent);
+                    unless ($seen{$dep_group_key}) {
+                        # Show the dependency group parent - it will recursively show the dependency as its child
+                        $print_tree->($dep_group_parent, $prefix . "  ", $node);
+                    }
+                    # Note: We don't show the dependency directly here because it will be shown
+                    # as a child of the dependency group when we traverse the dependency group
+                } else {
+                    # No dependency group parent, show the dependency directly
+                    $print_tree->($dep, $prefix . "  ", $node);
+                }
             }
         }
     };
