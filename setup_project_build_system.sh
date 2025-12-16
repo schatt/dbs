@@ -125,6 +125,22 @@ else
     print_warning "No buildconfig.sample.yml found in build system"
 fi
 
+# Copy release process template (optional)
+print_status "Setting up release process template"
+if [ -f "$DBS_PATH/Scripts/release-process.sh.template" ]; then
+    if [ ! -f "$PROJECT_PATH/release-process.sh" ]; then
+        print_status "Copying release-process.sh.template to release-process.sh"
+        cp "$DBS_PATH/Scripts/release-process.sh.template" "$PROJECT_PATH/release-process.sh"
+        chmod +x "$PROJECT_PATH/release-process.sh"
+        print_success "Created release-process.sh from template"
+        print_warning "⚠️  Remember to customize the configuration section in release-process.sh for your project"
+    else
+        print_warning "release-process.sh already exists, not overwriting"
+    fi
+else
+    print_warning "No release-process.sh.template found in build system"
+fi
+
 # Verify symlinks were created correctly
 print_status "Verifying symlinks..."
 all_good=true
@@ -162,6 +178,10 @@ The following files are symlinked from the shared build system:
 - \`Scripts/BuildUtils.pm\` - Utility functions
 - \`Scripts/prereqs.sh\` - Prerequisites setup
 
+The following files are copied (not symlinked) and should be customized:
+- \`release-process.sh\` - Release process script (customize configuration section)
+- \`buildconfig.yml\` - Build configuration (project-specific)
+
 ## Usage
 
 \`\`\`bash
@@ -173,16 +193,23 @@ The following files are symlinked from the shared build system:
 
 # Validate build configuration
 ./Scripts/build.pl --validate
+
+# Run release process (after customizing release-process.sh)
+./release-process.sh minor 1.2.3
 \`\`\`
 
 ## Configuration
 
 Edit \`buildconfig.yml\` to configure your project's build targets and dependencies.
 
+Edit \`release-process.sh\` to configure release validation for your project type.
+
 ## Updating
 
 To update to the latest build system, simply pull the latest changes from the DBS repository.
 The symlinks will automatically point to the updated files.
+
+Note: \`release-process.sh\` and \`buildconfig.yml\` are copied (not symlinked), so they won't automatically update.
 
 ## Restoring
 

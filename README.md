@@ -56,6 +56,14 @@ This will:
 - **`buildconfig.sample.yml`** - Sample configuration file
 - **`buildconfig.yml`** - Project-specific configuration (created during setup)
 
+### Additional Tools
+
+- **`Scripts/release-process.sh.template`** - Generic release process script template
+  - Comprehensive release validation and automation
+  - Supports multiple project types (Swift, Node.js, Python, etc.)
+  - Configurable version extraction, testing, and documentation checks
+  - See `Scripts/RELEASE_PROCESS_README.md` for detailed documentation
+
 ## Usage
 
 ### Basic Commands
@@ -117,9 +125,12 @@ dbs/
 │   ├── BuildNodeRegistry.pm   # Node registry
 │   ├── BuildStatusManager.pm  # Status management
 │   ├── BuildUtils.pm          # Utility functions
-│   └── prereqs.sh             # Prerequisites setup
+│   ├── prereqs.sh             # Prerequisites setup
+│   ├── release-process.sh.template  # Release process template
+│   └── RELEASE_PROCESS_README.md    # Release process documentation
 ├── buildconfig.sample.yml     # Sample configuration
 ├── setup_project_build_system.sh  # Setup script for new projects
+├── install_dbs_tools.sh      # Install DBS tools globally
 └── README.md                  # This file
 ```
 
