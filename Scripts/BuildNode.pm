@@ -63,7 +63,7 @@ sub new {
     }
     $fields{blocked_by} ||= {};  # Hash of node_key => 1 for nodes that block this one
     $fields{blocks} ||= {};      # Hash of node_key => 1 for nodes this one blocks
-    $fields{child_order} ||= undef;  # Order within parent group (1, 2, 3, etc.)
+    $fields{child_order_by_parent} ||= {};  # Hash: parent_key => order (1, 2, 3, etc.)
     
     # Conditional notification system
     $fields{success_notify} ||= [];  # Array of hashes: [{node_ref => false}, ...]
@@ -240,7 +240,7 @@ sub get_parallel_capacity {
     # Check if we have a dependency group (child_order: 0) that's not complete
     if ($groups_ready_ref) {
         for my $child (@{$self->children // []}) {
-            if (($child->get_child_order // 0) == 0) {
+            if (($child->get_child_order($self) // 0) == 0) {
                 my $child_status = $main::STATUS_MANAGER->get_status($child);
                 if (!is_successful_completion_status($child_status)) {
                     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -264,9 +264,24 @@ sub get_parallel_capacity {
     }
 }
 
-# Child ordering accessors
-sub get_child_order { defined($_[0]->{child_order}) ? $_[0]->{child_order} : 999 }
-sub set_child_order { $_[0]->{child_order} = $_[1] }
+# Child ordering accessors - per parent
+sub get_child_order { 
+    my ($self, $parent) = @_;
+    # If no parent specified, try to get from first parent (for backward compatibility)
+    unless ($parent) {
+        my $parents = $self->get_clean_parents;
+        $parent = $parents->[0] if $parents && @$parents;
+    }
+    return 999 unless $parent;  # Default if no parent specified
+    my $parent_key = ref($parent) && $parent->can('key') ? $parent->key : $parent;
+    return defined($self->{child_order_by_parent}{$parent_key}) ? $self->{child_order_by_parent}{$parent_key} : 999;
+}
+sub set_child_order { 
+    my ($self, $order, $parent) = @_;
+    return unless defined($order) && $parent;
+    my $parent_key = ref($parent) && $parent->can('key') ? $parent->key : $parent;
+    $self->{child_order_by_parent}{$parent_key} = $order;
+}
 
 # Blocking system accessors
 sub blocked_by   { $_[0]->{blocked_by} || {} }
@@ -1422,7 +1437,7 @@ sub get_external_dependencies {
         
         # Check each parent to see if this node should coordinate next
         for my $parent (@{ $self->get_clean_parents }) {
-            my $my_child_id = $self->get_child_order();
+            my $my_child_id = $self->get_child_order($parent);
             
             # EARLY EXIT: If parent is not in GR, this node cannot coordinate
             unless (is_node_in_groups_ready($parent, $groups_ready_ref)) {
@@ -1551,8 +1566,8 @@ sub get_external_dependencies {
     # child_id 2 coordinates when 2 children completed
     # This uses zero-based indexing (dependency groups start at child_id 0)
     sub is_sequential_coordination_ready {
-        my ($self, $children_completed) = @_;
-        my $my_child_id = $self->get_child_order();
+        my ($self, $children_completed, $parent) = @_;
+        my $my_child_id = $self->get_child_order($parent);
         return ($my_child_id == $children_completed);
     }
     
@@ -1564,11 +1579,11 @@ sub get_external_dependencies {
         my $parent = $self->get_clean_parents->[0];  # Assume single parent for now
         return 0 unless $parent;
         
-        my $my_child_id = $self->get_child_order();
+        my $my_child_id = $self->get_child_order($parent);
         my $children_completed = $parent->number_of_children_completed();
         
         # Use single source of truth for sequential coordination logic
-        return $self->is_sequential_coordination_ready($children_completed);
+        return $self->is_sequential_coordination_ready($children_completed, $parent);
     }
     
     # Check if this parent's dependency group (child_id 0) is complete
@@ -1577,7 +1592,7 @@ sub get_external_dependencies {
         
         # Find the dependency group (child with child_order: 0) of this parent
         for my $child (@{ $self->children // [] }) {
-            if (($child->get_child_order // 999) == 0) {
+            if (($child->get_child_order($self) // 999) == 0) {
                 my $child_status = $main::STATUS_MANAGER->get_status($child);
                 return is_successful_completion_status($child_status);
             }

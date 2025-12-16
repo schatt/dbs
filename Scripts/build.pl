@@ -2328,6 +2328,31 @@ sub phase1_coordination {
     }
     
     log_debug("phase1_coordination: copied $nodes_copied nodes from RPP to groups_ready");
+    
+    # Debug: List all nodes currently in groups_ready
+    if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+        my @gr_nodes = ();
+        for my $canonical_key (keys %GROUPS_READY_NODES) {
+            my $node = $REGISTRY->get_node_by_key($canonical_key);
+            if ($node) {
+                my $node_name = $node->name;
+                my $child_order = $node->can('get_child_order') ? ($node->get_child_order // 999) : 999;
+                push @gr_nodes, { name => $node_name, child_order => $child_order, key => $canonical_key };
+            } else {
+                push @gr_nodes, { name => "UNKNOWN($canonical_key)", child_order => 999, key => $canonical_key };
+            }
+        }
+        # Sort by child_order (dependency groups first), then by name
+        @gr_nodes = sort {
+            $a->{child_order} <=> $b->{child_order} || $a->{name} cmp $b->{name}
+        } @gr_nodes;
+        
+        log_debug("phase1_coordination: GR contents (" . scalar(@gr_nodes) . " nodes):");
+        for my $gr_entry (@gr_nodes) {
+            log_debug("  - " . $gr_entry->{name} . " (child_order: " . $gr_entry->{child_order} . ")");
+        }
+    }
+    
     return $nodes_copied;
 }
 

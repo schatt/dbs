@@ -2025,11 +2025,11 @@ sub build_graph_with_worklist {
                         if ($child_node) {
                                                     # Special case: if this is a dependency group, set child_order to 0
                         if ($child_node->name =~ /_dependency_group$/) {
-                            $child_node->set_child_order(0);
+                            $child_node->set_child_order(0, $node);
                             # NO increment for dependency groups - they don't count in the sequence
                         } else {
                             # Auto-assign child_order for sequential execution
-                            $child_node->set_child_order($child_order);
+                            $child_node->set_child_order($child_order, $node);
                             # Increment child_order for next regular child
                             $child_order++;
                         }
@@ -2345,8 +2345,8 @@ sub create_dependency_parent {
     my $dep_group_node = build_and_register_node($dep_group_entry, $args, $registry, $task_by_name, $platform_by_name, $group_by_name, $dep_group_canonical_key);
     return undef unless $dep_group_node;
     
-    # Set child_order to 0 for dependency groups
-    $dep_group_node->set_child_order(0);
+    # Set child_order to 0 for dependency groups (relative to original_node)
+    $dep_group_node->set_child_order(0, $original_node);
     
     # Add dependency group to registry
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -2382,8 +2382,8 @@ sub create_dependency_parent {
         my $child_node = get_or_create_node($child_name, $child_args, $dep_group_node->key, $dep_group_node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, undef, 1);
         
         if ($child_node) {
-            # Set child_order for the dependency
-            $child_node->set_child_order($child_order);
+            # Set child_order for the dependency (relative to dep_group_node)
+            $child_node->set_child_order($child_order, $dep_group_node);
             
             # Establish parent-child relationship
             process_node_relationships_immediately($dep_group_node, $child_node, 'child', $registry);
