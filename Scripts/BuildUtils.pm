@@ -1388,8 +1388,8 @@ sub _print_tree_traversal {
             
             # Sort children by child_order (dependency groups have child_order=0, regular children have child_order>=1)
             my @sorted_children = sort { 
-                my $order_a = $a->can('get_child_order') ? ($a->get_child_order // 999) : 999;
-                my $order_b = $b->can('get_child_order') ? ($b->get_child_order // 999) : 999;
+                my $order_a = $a->can('get_child_order') ? ($a->get_child_order($node) // 999) : 999;
+                my $order_b = $b->can('get_child_order') ? ($b->get_child_order($node) // 999) : 999;
                 $order_a <=> $order_b;
             } @filtered_children;
             

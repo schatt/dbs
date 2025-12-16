@@ -2314,7 +2314,7 @@ sub phase1_coordination {
             # OPTIMIZATION: If node has an auto-generated dependency group, automatically copy it to GR
             if ($node->can('children') && $node->children && ref($node->children) eq 'ARRAY') {
                 for my $child (@{$node->children}) {
-                    if (($child->get_child_order // 0) == 0) {  # dependency group (child_id 0)
+                    if (($child->get_child_order($node) // 0) == 0) {  # dependency group (child_id 0)
                         my $dep_group_status = $STATUS_MANAGER->get_status($child);
                         if ($dep_group_status eq 'pending') {
                             add_to_groups_ready($child);
@@ -2336,7 +2336,16 @@ sub phase1_coordination {
             my $node = $REGISTRY->get_node_by_key($canonical_key);
             if ($node) {
                 my $node_name = $node->name;
-                my $child_order = $node->can('get_child_order') ? ($node->get_child_order // 999) : 999;
+                # Get child_order from first parent if available
+                my $child_order = 999;
+                if ($node->can('get_child_order')) {
+                    my $parents = $node->get_clean_parents;
+                    if ($parents && @$parents) {
+                        $child_order = $node->get_child_order($parents->[0]) // 999;
+                    } else {
+                        $child_order = $node->get_child_order() // 999;
+                    }
+                }
                 push @gr_nodes, { name => $node_name, child_order => $child_order, key => $canonical_key };
             } else {
                 push @gr_nodes, { name => "UNKNOWN($canonical_key)", child_order => 999, key => $canonical_key };
@@ -2394,7 +2403,16 @@ sub phase2_execution_preparation {
         
         # Debug: log what we're checking
         if ($VERBOSITY_LEVEL >= 3) {
-            my $child_order = $node->can('get_child_order') ? $node->get_child_order : 'UNKNOWN';
+            # Get child_order from first parent if available
+            my $child_order = 'UNKNOWN';
+            if ($node->can('get_child_order')) {
+                my $parents = $node->get_clean_parents;
+                if ($parents && @$parents) {
+                    $child_order = $node->get_child_order($parents->[0]) // 'UNKNOWN';
+                } else {
+                    $child_order = $node->get_child_order() // 'UNKNOWN';
+                }
+            }
             my $has_parents = $node->has_any_parents() ? 'YES' : 'NO';
             log_debug("phase2_execution_preparation: checking node " . $node->name . " (child_order: $child_order, has_parents: $has_parents)");
         }
@@ -2433,7 +2451,7 @@ sub phase2_execution_preparation {
         my $dependency_group_complete = 1;
         if ($parent->can('children') && $parent->children && ref($parent->children) eq 'ARRAY') {
             for my $child (@{$parent->children}) {
-                if (($child->get_child_order // 999) == 0) {  # dependency group (child_id 0)
+                if (($child->get_child_order($parent) // 999) == 0) {  # dependency group (child_id 0)
                     my $dep_group_status = $STATUS_MANAGER->get_status($child);
                     if ($VERBOSITY_LEVEL >= 3) {
                         log_debug("phase2_execution_preparation: checking parent " . $parent->name . " dependency group " . $child->name . " status: " . $dep_group_status);
@@ -2447,10 +2465,14 @@ sub phase2_execution_preparation {
         }
                 
                 # Single check: child_id == 0 || child_id 0 complete
-                if (($node->get_child_order // 999) == 0 || $dependency_group_complete) {
+                my $node_child_order = 999;
+                if ($node->can('get_child_order')) {
+                    $node_child_order = $node->get_child_order($parent) // 999;
+                }
+                if ($node_child_order == 0 || $dependency_group_complete) {
                     $ready_for_execution = 1;
                                          if ($VERBOSITY_LEVEL >= 3) {
-                         if (($node->get_child_order // 999) == 0) {
+                         if ($node_child_order == 0) {
                              log_debug("phase2_execution_preparation: node " . $node->name . " is a dependency group (child_id 0), can execute immediately");
                          } else {
                              log_debug("phase2_execution_preparation: node " . $node->name . " is ready for execution (parent " . $parent->name . " dependency group complete)");
@@ -2775,7 +2797,7 @@ sub execute_build_nodes {
                 # Also add root node's dependency group if it exists
                 if ($root_node->can('children') && $root_node->children && ref($root_node->children) eq 'ARRAY') {
                     for my $child (@{$root_node->children}) {
-                        if (($child->get_child_order // 0) == 0) {  # dependency group (child_id 0)
+                        if (($child->get_child_order($root_node) // 0) == 0) {  # dependency group (child_id 0)
                             my $dep_group_status = $STATUS_MANAGER->get_status($child);
                             if ($dep_group_status eq 'pending') {
                                 add_to_groups_ready($child);
@@ -2924,7 +2946,7 @@ sub execute_build_nodes {
                                     # Check dependency group status
                                     if ($parent->can('children') && $parent->children && ref($parent->children) eq 'ARRAY') {
                                         for my $child (@{$parent->children}) {
-                                            if (($child->get_child_order // 0) == 0) {  # dependency group (child_id 0)
+                                            if (($child->get_child_order($parent) // 0) == 0) {  # dependency group (child_id 0)
                                                 my $dep_group_status = $STATUS_MANAGER->get_status($child);
                                                 log_debug("          Dependency group " . $child->name . " status: $dep_group_status");
                                             }

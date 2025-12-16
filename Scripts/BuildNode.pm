@@ -1033,9 +1033,9 @@ sub get_external_dependencies {
             
             # Special case: child_order: 0 nodes (dependency groups) can always move to ready
             # OR if parallel capacity allows it
-            if (($self->get_child_order // 999) == 0 || $current_count < $capacity) {
+            if (($self->get_child_order($parent) // 999) == 0 || $current_count < $capacity) {
                 if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                    if (($self->get_child_order // 999) == 0) {
+                    if (($self->get_child_order($parent) // 999) == 0) {
                         log_debug("can_move_to_ready: " . $self->name . " is dependency group (child_order: 0) - bypassing capacity check");
                     } else {
                         log_debug("can_move_to_ready: " . $self->name . " has parallel capacity available: $current_count < $capacity");
@@ -1076,7 +1076,7 @@ sub get_external_dependencies {
             log_debug("=== CHILDREN SUMMARY ===");
             for my $i (0..$#{$self->children // []}) {
                 my $child = $self->children->[$i];
-                my $order = $child->get_child_order // 0;
+                my $order = $child->get_child_order($self) // 0;
                 my $status = $main::STATUS_MANAGER->get_status($child);
                 my $is_dep_group = ($order == 0) ? 'YES' : 'NO';
                 log_debug("Child[$i]: " . $child->name . " (order: $order, status: $status, dep_group: $is_dep_group, type: " . ($child->type // 'unknown') . ")");
@@ -1084,8 +1084,8 @@ sub get_external_dependencies {
             log_debug("=== END CHILDREN SUMMARY ===");
         }
         
-        # Sort children by child_order
-        my @sorted_children = sort { ($a->get_child_order // 0) <=> ($b->get_child_order // 0) } @{$self->children // []};
+        # Sort children by child_order (relative to $self)
+        my @sorted_children = sort { ($a->get_child_order($self) // 0) <=> ($b->get_child_order($self) // 0) } @{$self->children // []};
         
         if (@sorted_children == 0) {
             if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -1099,7 +1099,7 @@ sub get_external_dependencies {
             log_debug("=== CHILD ORDERING DEBUG ===");
             for my $i (0..$#sorted_children) {
                 my $child = $sorted_children[$i];
-                my $order = $child->get_child_order // 0;
+                my $order = $child->get_child_order($self) // 0;
                 my $status = $main::STATUS_MANAGER->get_status($child);
                 log_debug("Child[$i]: " . $child->name . " (order: $order, status: $status, type: " . ($child->type // 'unknown') . ")");
             }
@@ -1109,7 +1109,7 @@ sub get_external_dependencies {
         # Find the first child that's ready AND all lower-order siblings are either done or blocked
         for my $child (@sorted_children) {
             my $child_status = $main::STATUS_MANAGER->get_status($child);
-            my $child_order = $child->get_child_order // 0;
+            my $child_order = $child->get_child_order($self) // 0;
             
             # Enhanced debugging for each child
             if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
@@ -1154,7 +1154,7 @@ sub get_external_dependencies {
                 }
                 
                 for my $lower_child (@sorted_children) {
-                    my $lower_order = $lower_child->get_child_order // 0;
+                    my $lower_order = $lower_child->get_child_order($self) // 0;
                     next if $lower_order >= $child_order;
                     
                     $lower_sibling_count++;
@@ -1190,7 +1190,7 @@ sub get_external_dependencies {
                     log_debug("Lower siblings checked: $lower_sibling_count");
                     log_debug("All lower siblings handled: " . ($all_lower_siblings_handled ? 'YES' : 'NO'));
                     if ($blocking_sibling) {
-                        log_debug("Blocking sibling: " . $blocking_sibling->name . " (order: " . ($blocking_sibling->get_child_order // 0) . ", status: " . $main::STATUS_MANAGER->get_status($blocking_sibling) . ")");
+                        log_debug("Blocking sibling: " . $blocking_sibling->name . " (order: " . ($blocking_sibling->get_child_order($self) // 0) . ", status: " . $main::STATUS_MANAGER->get_status($blocking_sibling) . ")");
                     }
                 }
                 
@@ -1260,7 +1260,7 @@ sub get_external_dependencies {
         my ($self, $child, $groups_ready_ref) = @_;
         
         # Special case: child_order: 0 (dependency groups) can coordinate IF their dependencies and notifiers are satisfied
-        if (($child->get_child_order // 0) == 0) {
+        if (($child->get_child_order($self) // 0) == 0) {
             if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
                 log_debug("ready_to_coordinate_child: Checking dependency group " . $child->name . " (child_order: 0)");
             }
@@ -1298,7 +1298,7 @@ sub get_external_dependencies {
         if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
             log_debug("=== ready_to_coordinate_child: Checking sequential order ===");
             log_debug("Parent: " . $self->name . " (type: " . ($self->type // 'unknown') . ")");
-            log_debug("Child to check: " . $child->name . " (child_order: " . ($child->get_child_order // 0) . ")");
+            log_debug("Child to check: " . $child->name . " (child_order: " . ($child->get_child_order($self) // 0) . ")");
         }
         
         my $next_sequential = $self->get_next_sequential_child();
@@ -1306,7 +1306,7 @@ sub get_external_dependencies {
         if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
             log_debug("Parent's next sequential child: " . ($next_sequential ? $next_sequential->name : 'undefined'));
             if ($next_sequential) {
-                log_debug("Next sequential order: " . ($next_sequential->get_child_order // 0));
+                log_debug("Next sequential order: " . ($next_sequential->get_child_order($self) // 0));
                 log_debug("Next sequential status: " . ($main::STATUS_MANAGER->get_status($next_sequential) // 'unknown'));
             }
         }
@@ -1338,10 +1338,10 @@ sub get_external_dependencies {
         my $current_coordinating = 0;
         
         # For regular children (child_id != 0), check if there's an incomplete dependency group blocking them
-        if (($child->get_child_order // 0) != 0) {
+        if (($child->get_child_order($self) // 0) != 0) {
             # Check if any dependency group (child_order: 0) is incomplete
             for my $dep_child (@{$self->children // []}) {
-                if (($dep_child->get_child_order // 0) == 0) {
+                if (($dep_child->get_child_order($self) // 0) == 0) {
                     my $dep_status = $main::STATUS_MANAGER->get_status($dep_child);
                     if (!is_successful_completion_status($dep_status)) {
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -1392,7 +1392,7 @@ sub get_external_dependencies {
         return undef unless $next_sequential;
         
         # Special case: dependency groups (child_order: 0) can always coordinate
-        if (($next_sequential->get_child_order // 0) == 0) {
+        if (($next_sequential->get_child_order($self) // 0) == 0) {
             if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
                 log_debug("get_next_coordination_child: Dependency group " . $next_sequential->name . " (child_order: 0) - always allowed to coordinate");
             }
@@ -1457,7 +1457,12 @@ sub get_external_dependencies {
             
             # If parent is a dependency group (parent's child_order == 0), children can coordinate immediately
             # Dependency groups don't have their own dependency groups - they ARE the dependency group
-            my $parent_child_order = $parent->get_child_order // 999;
+            # Need to check parent's child_order relative to its parent
+            my $parent_parents = $parent->get_clean_parents;
+            my $parent_child_order = 999;
+            if ($parent_parents && @$parent_parents) {
+                $parent_child_order = $parent->get_child_order($parent_parents->[0]) // 999;
+            }
             if ($parent_child_order == 0) {
                 # Parent is a dependency group, so children (starting with child_order 1) can coordinate
                 # Skip the dependency group complete check and proceed to coordination logic
@@ -1490,7 +1495,7 @@ sub get_external_dependencies {
             for my $i (0..$#{$parent->children // []}) {
                 my $child = $parent->children->[$i];
                 my $child_status = $main::STATUS_MANAGER->get_status($child);
-                my $child_order = $child->get_child_order // 0;
+                my $child_order = $child->get_child_order($parent) // 0;
                 log_debug("  [$i] " . $child->name . " (order: $child_order, status: $child_status)");
             }
             log_debug("End of parent's children list");
@@ -1610,7 +1615,7 @@ sub get_external_dependencies {
         for my $parent (@{ $self->get_clean_parents }) {
             # Find the dependency group (child with child_order: 0) of this parent
             for my $sibling (@{ $parent->children // [] }) {
-                if (($sibling->get_child_order // 0) == 0) {
+                if (($sibling->get_child_order($parent) // 0) == 0) {
                     # Skip self-blocking: a dependency group should not be blocked by itself
                     if ($sibling == $self) {
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -1713,16 +1718,22 @@ sub get_external_dependencies {
         # Step 3: For non-dependency groups, check if parent's dependency group is complete
         # For dependency groups (child_order = 0): this check is not applicable (always true)
         # For regular children (child_order > 0): parent's dependency group must be complete
-        if ($self->get_child_order != 0) {
-            # Find parent's dependency group (child_order = 0) and check if it's complete
-            if (defined $self->parent_group && $self->parent_group->can('children')) {
-                for my $sibling (@{ $self->parent_group->children // [] }) {
-                    if (($sibling->get_child_order // 0) == 0) {  # dependency group
-                        my $sibling_status = $main::STATUS_MANAGER->get_status($sibling);
-                        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-                            log_debug("is_ready_for_execution: " . $self->name . " checking parent dep group " . $sibling->name . " status: " . $sibling_status);
+        my $parents = $self->get_clean_parents;
+        if ($parents && @$parents) {
+            my $my_child_order = $self->get_child_order($parents->[0]);
+            if ($my_child_order != 0) {
+                # Find parent's dependency group (child_order = 0) and check if it's complete
+                for my $parent (@$parents) {
+                    if (defined $parent && $parent->can('children')) {
+                        for my $sibling (@{ $parent->children // [] }) {
+                            if (($sibling->get_child_order($parent) // 0) == 0) {  # dependency group
+                                my $sibling_status = $main::STATUS_MANAGER->get_status($sibling);
+                                if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                                    log_debug("is_ready_for_execution: " . $self->name . " checking parent dep group " . $sibling->name . " status: " . $sibling_status);
+                                }
+                                return 0 unless is_successful_completion_status($sibling_status);
+                            }
                         }
-                        return 0 unless is_successful_completion_status($sibling_status);
                     }
                 }
             }
