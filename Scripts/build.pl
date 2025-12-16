@@ -1,4 +1,68 @@
 #!/usr/bin/env perl
+# Auto-detect and use perlbrew local library if available (must be before all use statements)
+BEGIN {
+    # Try to use perlbrew lib if available
+    if (my $perlbrew_root = $ENV{PERLBREW_ROOT} || "$ENV{HOME}/perl5/perlbrew") {
+        # Check if perlbrew root directory exists
+        if (-d $perlbrew_root) {
+            # Try to detect current perlbrew perl version
+            my $perl_version = '';
+            
+            # First, check PERLBREW_PERL environment variable (set by perlbrew use)
+            if ($ENV{PERLBREW_PERL}) {
+                $perl_version = $ENV{PERLBREW_PERL};
+            }
+            # Second, try to infer from $^X (the perl executable path)
+            # Match patterns like: /path/to/perlbrew/perls/perl-5.42.0/bin/perl
+            elsif ($^X =~ /perlbrew[^\/]*\/perls\/(perl-[\d.]+)/) {
+                $perl_version = $1;
+            }
+            # Third, try to run perlbrew list (only if perlbrew is in PATH)
+            elsif (grep { -x "$_/perlbrew" } split /:/, ($ENV{PATH} || '')) {
+                # Suppress stderr by redirecting to /dev/null in the shell
+                if (open my $fh, '-|', 'perlbrew list 2>/dev/null') {
+                    while (my $line = <$fh>) {
+                        if ($line =~ /^\*\s+(\S+)/) {
+                            $perl_version = $1;
+                            last;
+                        }
+                    }
+                    close $fh;
+                }
+            }
+            
+            # Try common local lib names (project-specific or default)
+            if ($perl_version) {
+                for my $lib_name (qw(dbs-project default)) {
+                    my $lib_path = "$perlbrew_root/libs/${perl_version}\@${lib_name}/lib/perl5";
+                    if (-d $lib_path) {
+                        unshift @INC, $lib_path;
+                        last;
+                    }
+                }
+                
+                # Fallback: if no named lib found, try to find any local lib for this perl version
+                if (!grep { $_ =~ /libs\/${perl_version}\@/ } @INC) {
+                    my $libs_dir = "$perlbrew_root/libs";
+                    if (-d $libs_dir && opendir my $dh, $libs_dir) {
+                        while (my $entry = readdir $dh) {
+                            next if $entry =~ /^\./;
+                            if ($entry =~ /^\Q${perl_version}\E\@(.+)$/) {
+                                my $lib_path = "$libs_dir/$entry/lib/perl5";
+                                if (-d $lib_path) {
+                                    unshift @INC, $lib_path;
+                                    last;
+                                }
+                            }
+                        }
+                        closedir $dh;
+                    }
+                }
+            }
+        }
+    }
+}
+
 use strict;
 use warnings;
 use YAML::XS 'LoadFile';
@@ -2229,11 +2293,21 @@ sub phase1_coordination {
         }
         
         # Check if this node can coordinate its children (should coordinate next)
+        # Root nodes (no parents) should always be able to coordinate
         my $can_coordinate = $node->should_coordinate_next(\%GROUPS_READY_NODES);
+        
+        if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+            if (!$dependencies_satisfied) {
+                log_debug("phase1_coordination: node " . $node->name . " dependencies not satisfied");
+            }
+            if (!$can_coordinate) {
+                log_debug("phase1_coordination: node " . $node->name . " cannot coordinate");
+            }
+        }
         
         # If dependencies are satisfied AND node can coordinate, copy to groups_ready
         if ($dependencies_satisfied && $can_coordinate) {
-            add_to_groups_ready($node, \%GROUPS_READY_NODES);
+            add_to_groups_ready($node);
             $nodes_copied++;
             log_debug("phase1_coordination: copied node " . $node->name . " to groups_ready");
             
@@ -2243,7 +2317,7 @@ sub phase1_coordination {
                     if (($child->get_child_order // 0) == 0) {  # dependency group (child_id 0)
                         my $dep_group_status = $STATUS_MANAGER->get_status($child);
                         if ($dep_group_status eq 'pending') {
-                            add_to_groups_ready($child, \%GROUPS_READY_NODES);
+                            add_to_groups_ready($child);
                             $nodes_copied++;
                             log_debug("phase1_coordination: OPTIMIZATION: auto-copied dependency group " . $child->name . " to groups_ready");
                         }
@@ -2279,7 +2353,13 @@ sub phase2_execution_preparation {
         
         # Skip nodes that are not in pending status
         # Probably unnecessary.
-        next unless $STATUS_MANAGER->is_pending($node);
+        unless ($STATUS_MANAGER->is_pending($node)) {
+            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                my $status = $STATUS_MANAGER->get_status($node);
+                log_debug("phase2_execution_preparation: node " . $node->name . " not pending (status: $status), skipping");
+            }
+            next;
+        }
         
         # Check if this node is in groups_ready
         unless (is_node_in_groups_ready($node)) {
@@ -2599,7 +2679,8 @@ sub phase3_actual_execution {
 
 # --- Build Node Execution Engine (DRY: handles both execution and validation) ---
 sub execute_build_nodes {
-    # Use global registry - no parameters needed
+    # Optional parameter: target name (root node name)
+    my $target_name = shift;
     
     # Use global execution mode flags
     my $is_dry_run = $IS_DRY_RUN;
@@ -2634,6 +2715,60 @@ sub execute_build_nodes {
         $STATUS_MANAGER->set_status($node, 'pending');
         push @READY_PENDING_PARENT_NODES, $node;
         
+    }
+    
+    # CRITICAL: Add root node (target) to groups_ready before loop starts
+    # This unblocks the entire dependency graph from the start
+    if ($target_name) {
+        my $root_node = $REGISTRY->get_node_by_name_and_args($target_name, {});
+        if ($root_node) {
+            if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                log_debug("execute_build_nodes: Found target root node: " . $root_node->name);
+            }
+            
+            # Check if root node's external dependencies are satisfied
+            my $dependencies_satisfied = 1;
+            my $deps = $root_node->get_external_dependencies;
+            for my $dep_node (@$deps) {
+                my $dep_status = $STATUS_MANAGER->get_status($dep_node);
+                if ($dep_status ne 'done' && $dep_status ne 'skipped') {
+                    $dependencies_satisfied = 0;
+                    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                        log_debug("execute_build_nodes: Root node external dependency " . $dep_node->name . " not satisfied (status: $dep_status)");
+                    }
+                    last;
+                }
+            }
+            
+            # Root node can always coordinate (no parent check needed)
+            if ($dependencies_satisfied) {
+                add_to_groups_ready($root_node);
+                if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                    log_debug("execute_build_nodes: Added root node " . $root_node->name . " to groups_ready");
+                }
+                
+                # Also add root node's dependency group if it exists
+                if ($root_node->can('children') && $root_node->children && ref($root_node->children) eq 'ARRAY') {
+                    for my $child (@{$root_node->children}) {
+                        if (($child->get_child_order // 0) == 0) {  # dependency group (child_id 0)
+                            my $dep_group_status = $STATUS_MANAGER->get_status($child);
+                            if ($dep_group_status eq 'pending') {
+                                add_to_groups_ready($child);
+                                if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                                    log_debug("execute_build_nodes: Added root node's dependency group " . $child->name . " to groups_ready");
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
+                    log_debug("execute_build_nodes: Root node " . $root_node->name . " has unsatisfied external dependencies, will be processed in phase1");
+                }
+            }
+        } else {
+            log_warn("execute_build_nodes: Target root node '$target_name' not found in registry");
+        }
     }
     
     # Main execution loop using three-phase approach
@@ -3588,7 +3723,7 @@ sub main {
         # Registry is already fully populated by build_graph_with_worklist
         
         # Execute the target (single execution path, mode-aware behavior)
-        my ($result, $execution_order_ref, $duration_ref) = execute_build_nodes();
+        my ($result, $execution_order_ref, $duration_ref) = execute_build_nodes($current_target);
         
         # Store results
         push @all_results, $result;
