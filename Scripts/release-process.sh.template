@@ -1,0 +1,515 @@
+#!/bin/bash
+
+# Generic Release Process Script Template
+# This script enforces release documentation and validation before creating a release
+#
+# SETUP INSTRUCTIONS:
+# 1. Copy this file to your project: cp release-process.sh.template release-process.sh
+# 2. Customize the CONFIGURATION section below for your project
+# 3. Make it executable: chmod +x release-process.sh
+# 4. Run it: ./release-process.sh [release_type] [version]
+
+set -e
+
+###############################################################################
+# CONFIGURATION - CUSTOMIZE THIS SECTION FOR YOUR PROJECT
+###############################################################################
+
+# Project information
+PROJECT_NAME="${PROJECT_NAME:-MyProject}"  # Your project name
+GITHUB_OWNER="${GITHUB_OWNER:-yourusername}"  # GitHub username/org
+GITHUB_REPO="${GITHUB_REPO:-yourrepo}"  # GitHub repository name
+
+# Version extraction configuration
+# Set VERSION_EXTRACTION_METHOD to one of:
+#   - "package_swift"    # Swift Package.swift file
+#   - "package_json"     # Node.js package.json
+#   - "setup_py"         # Python setup.py
+#   - "version_file"     # Simple VERSION file
+#   - "readme"           # Extract from README.md
+#   - "custom"           # Use custom extraction function
+VERSION_EXTRACTION_METHOD="${VERSION_EXTRACTION_METHOD:-version_file}"
+
+# Version file path (if using VERSION_EXTRACTION_METHOD="version_file")
+VERSION_FILE="${VERSION_FILE:-VERSION}"
+
+# Version regex patterns (customize based on your version format)
+# Default: X.Y.Z format (e.g., 1.2.3)
+VERSION_PATTERN="${VERSION_PATTERN:-[0-9]+\.[0-9]+\.[0-9]+}"
+
+# Project regeneration (optional)
+# Set to command that regenerates project files (e.g., xcodegen, npm install, etc.)
+# Leave empty to skip
+PROJECT_REGENERATE_CMD="${PROJECT_REGENERATE_CMD:-}"
+
+# Test commands
+# Set to command that runs your test suite
+# Leave empty to skip tests
+TEST_CMD="${TEST_CMD:-}"
+
+# Documentation files to check
+# Add paths to files that should contain the version number
+DOC_FILES=(
+    "README.md"
+    # Add more files as needed:
+    # "CHANGELOG.md"
+    # "RELEASES.md"
+    # "package.json"
+    # "setup.py"
+)
+
+# Release notes file (optional)
+# Path to file containing release notes for this version
+# Leave empty to skip this check
+RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-}"
+
+# Release notes directory (alternative to single file)
+# If set, looks for RELEASE_v{VERSION}.md in this directory
+RELEASE_NOTES_DIR="${RELEASE_NOTES_DIR:-}"
+
+# Git configuration
+REQUIRE_CLEAN_GIT="${REQUIRE_CLEAN_GIT:-true}"  # Require clean git state
+REQUIRE_MAIN_BRANCH="${REQUIRE_MAIN_BRANCH:-true}"  # Require main/master branch
+MAIN_BRANCH_NAME="${MAIN_BRANCH_NAME:-main}"  # Name of main branch (main or master)
+
+# GitHub integration (optional)
+# Set to true to check GitHub milestones and issues
+ENABLE_GITHUB_CHECKS="${ENABLE_GITHUB_CHECKS:-false}"
+
+# Tag configuration
+AUTO_TAG="${AUTO_TAG:-false}"  # Automatically create and push tags
+GIT_REMOTE="${GIT_REMOTE:-origin}"  # Git remote name for pushing
+
+###############################################################################
+# VERSION EXTRACTION FUNCTIONS
+###############################################################################
+
+# Extract version from Swift Package.swift
+extract_version_from_package_swift() {
+    if [ -f "Package.swift" ]; then
+        local version_line=$(grep -E "^//.*v${VERSION_PATTERN}" Package.swift | head -1)
+        if [ -n "$version_line" ]; then
+            echo "$version_line" | sed -E "s/.*v(${VERSION_PATTERN}).*/\1/"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Extract version from Node.js package.json
+extract_version_from_package_json() {
+    if [ -f "package.json" ]; then
+        if command -v jq &> /dev/null; then
+            jq -r '.version' package.json 2>/dev/null | grep -E "^${VERSION_PATTERN}$" && return 0
+        else
+            # Fallback to grep/sed if jq not available
+            local version=$(grep -E '"version"' package.json | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+            if [[ "$version" =~ ^${VERSION_PATTERN}$ ]]; then
+                echo "$version"
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+# Extract version from Python setup.py
+extract_version_from_setup_py() {
+    if [ -f "setup.py" ]; then
+        local version_line=$(grep -E "version[[:space:]]*=[[:space:]]*['\"]${VERSION_PATTERN}['\"]" setup.py | head -1)
+        if [ -n "$version_line" ]; then
+            echo "$version_line" | sed -E "s/.*version[[:space:]]*=[[:space:]]*['\"](${VERSION_PATTERN})['\"].*/\1/"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Extract version from VERSION file
+extract_version_from_file() {
+    if [ -f "$VERSION_FILE" ]; then
+        local version=$(head -1 "$VERSION_FILE" | grep -oE "${VERSION_PATTERN}" | head -1)
+        if [ -n "$version" ]; then
+            echo "$version"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Extract version from README.md
+extract_version_from_readme() {
+    if [ -f "README.md" ]; then
+        # Look for common patterns: v1.2.3, Version 1.2.3, etc.
+        local version_line=$(grep -iE "(version|release)[[:space:]]*:?[[:space:]]*v?${VERSION_PATTERN}" README.md | head -1)
+        if [ -n "$version_line" ]; then
+            echo "$version_line" | grep -oE "${VERSION_PATTERN}" | head -1
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Main version extraction function
+get_current_version() {
+    case "$VERSION_EXTRACTION_METHOD" in
+        package_swift)
+            extract_version_from_package_swift
+            ;;
+        package_json)
+            extract_version_from_package_json
+            ;;
+        setup_py)
+            extract_version_from_setup_py
+            ;;
+        version_file)
+            extract_version_from_file
+            ;;
+        readme)
+            extract_version_from_readme
+            ;;
+        custom)
+            # User should define extract_version_custom() function
+            if type extract_version_custom &> /dev/null; then
+                extract_version_custom
+            else
+                echo "❌ Error: VERSION_EXTRACTION_METHOD is 'custom' but extract_version_custom() is not defined" >&2
+                return 1
+            fi
+            ;;
+        *)
+            # Try all methods in order
+            extract_version_from_file || \
+            extract_version_from_package_json || \
+            extract_version_from_package_swift || \
+            extract_version_from_setup_py || \
+            extract_version_from_readme || \
+            return 1
+            ;;
+    esac
+}
+
+###############################################################################
+# VERSION UTILITIES
+###############################################################################
+
+# Increment version based on release type
+increment_version() {
+    local current_version=$1
+    local release_type=$2
+    
+    # Parse version into major.minor.patch
+    IFS='.' read -r major minor patch <<< "$current_version"
+    
+    case "$release_type" in
+        major)
+            major=$((major + 1))
+            minor=0
+            patch=0
+            ;;
+        minor)
+            minor=$((minor + 1))
+            patch=0
+            ;;
+        patch)
+            patch=$((patch + 1))
+            ;;
+        *)
+            echo "❌ Error: Invalid release type '$release_type'. Must be 'major', 'minor', or 'patch'" >&2
+            return 1
+            ;;
+    esac
+    
+    echo "$major.$minor.$patch"
+}
+
+# Check if a string looks like a version number
+is_version_number() {
+    [[ "$1" =~ ^${VERSION_PATTERN}$ ]]
+}
+
+###############################################################################
+# ERROR TRACKING
+###############################################################################
+
+ERRORS_FOUND=0
+ERROR_MESSAGES=""
+
+log_error() {
+    echo "❌ $1"
+    ERRORS_FOUND=$((ERRORS_FOUND + 1))
+    ERROR_MESSAGES="${ERROR_MESSAGES}\n❌ $1"
+}
+
+###############################################################################
+# VALIDATION FUNCTIONS
+###############################################################################
+
+validate_project_regeneration() {
+    if [ -n "$PROJECT_REGENERATE_CMD" ]; then
+        echo "📋 Step 1: Regenerating project files..."
+        if eval "$PROJECT_REGENERATE_CMD"; then
+            echo "✅ Project regeneration successful"
+        else
+            log_error "Project regeneration failed!"
+            return 1
+        fi
+    fi
+}
+
+validate_tests() {
+    if [ -n "$TEST_CMD" ]; then
+        echo "📋 Step 2: Running test suite..."
+        if eval "$TEST_CMD"; then
+            echo "✅ Tests passed"
+        else
+            log_error "Tests failed! Cannot proceed with release."
+            return 1
+        fi
+    else
+        echo "ℹ️  Skipping tests (TEST_CMD not configured)"
+    fi
+}
+
+validate_git_state() {
+    if [ "$REQUIRE_CLEAN_GIT" = "true" ]; then
+        echo "📋 Step 3: Checking git repository status..."
+        ERRORS_BEFORE_GIT=$ERRORS_FOUND
+        if [ -n "$(git status --porcelain)" ]; then
+            log_error "Git repository has uncommitted changes! Please commit or stash all changes before creating a release."
+            echo ""
+            echo "Uncommitted changes:"
+            git status --short
+        fi
+        if [ $ERRORS_BEFORE_GIT -eq $ERRORS_FOUND ]; then
+            echo "✅ Git repository is clean"
+        fi
+    fi
+}
+
+validate_git_branch() {
+    if [ "$REQUIRE_MAIN_BRANCH" = "true" ]; then
+        echo "📋 Step 4: Checking current branch..."
+        ERRORS_BEFORE_BRANCH=$ERRORS_FOUND
+        CURRENT_BRANCH=$(git branch --show-current)
+        if [ "$CURRENT_BRANCH" != "$MAIN_BRANCH_NAME" ]; then
+            log_error "Not on $MAIN_BRANCH_NAME branch! Current branch: $CURRENT_BRANCH. Please switch to $MAIN_BRANCH_NAME branch before creating a release."
+        fi
+        if [ $ERRORS_BEFORE_BRANCH -eq $ERRORS_FOUND ]; then
+            echo "✅ On $MAIN_BRANCH_NAME branch"
+        fi
+    fi
+}
+
+validate_documentation() {
+    echo "📋 Step 5: Checking documentation files..."
+    ERRORS_BEFORE_DOC=$ERRORS_FOUND
+    
+    for doc_file in "${DOC_FILES[@]}"; do
+        if [ -f "$doc_file" ]; then
+            if ! grep -q "$VERSION" "$doc_file"; then
+                log_error "$doc_file missing version $VERSION!"
+            else
+                echo "✅ $doc_file contains version $VERSION"
+            fi
+        else
+            echo "⚠️  Warning: $doc_file not found (skipping)"
+        fi
+    done
+    
+    if [ $ERRORS_BEFORE_DOC -eq $ERRORS_FOUND ]; then
+        echo "✅ Documentation files validated"
+    fi
+}
+
+validate_release_notes() {
+    if [ -n "$RELEASE_NOTES_FILE" ]; then
+        echo "📋 Step 6: Checking release notes file..."
+        if [ -f "$RELEASE_NOTES_FILE" ]; then
+            if ! grep -q "$VERSION" "$RELEASE_NOTES_FILE"; then
+                log_error "Release notes file $RELEASE_NOTES_FILE missing version $VERSION!"
+            else
+                echo "✅ Release notes file contains version $VERSION"
+            fi
+        else
+            log_error "Release notes file $RELEASE_NOTES_FILE not found!"
+        fi
+    elif [ -n "$RELEASE_NOTES_DIR" ]; then
+        echo "📋 Step 6: Checking release notes directory..."
+        local release_file="$RELEASE_NOTES_DIR/RELEASE_v$VERSION.md"
+        if [ -f "$release_file" ]; then
+            echo "✅ Release notes file exists: $release_file"
+        else
+            log_error "Release notes file not found: $release_file"
+        fi
+    fi
+}
+
+validate_github() {
+    if [ "$ENABLE_GITHUB_CHECKS" = "true" ] && command -v gh &> /dev/null; then
+        echo "📋 Step 7: Checking GitHub milestones and issues..."
+        
+        local milestone_title="v$VERSION"
+        local milestone_data=$(gh api "repos/$GITHUB_OWNER/$GITHUB_REPO/milestones" --jq ".[] | select(.title == \"$milestone_title\")" 2>/dev/null || echo "")
+        
+        if [ -n "$milestone_data" ] && [ "$milestone_data" != "null" ]; then
+            local milestone_number=$(echo "$milestone_data" | jq -r '.number' 2>/dev/null || echo "")
+            if [ -n "$milestone_number" ] && [ "$milestone_number" != "null" ]; then
+                echo "✅ Found milestone: $milestone_title"
+                
+                # Check for open issues in milestone
+                local open_issues=$(gh api "repos/$GITHUB_OWNER/$GITHUB_REPO/issues?state=open&milestone=$milestone_number" --jq 'length' 2>/dev/null || echo "0")
+                if [ "$open_issues" != "0" ] && [ -n "$open_issues" ]; then
+                    log_error "Milestone $milestone_title has $open_issues open issue(s). All issues should be closed before release."
+                fi
+            fi
+        else
+            echo "ℹ️  No milestone found for v$VERSION (this is optional)"
+        fi
+    elif [ "$ENABLE_GITHUB_CHECKS" = "true" ]; then
+        echo "ℹ️  GitHub CLI (gh) not available, skipping GitHub checks"
+    fi
+}
+
+###############################################################################
+# MAIN SCRIPT
+###############################################################################
+
+# Parse arguments with smart detection
+ARG1=$1
+ARG2=$2
+
+if [ -z "$ARG1" ]; then
+    RELEASE_TYPE="patch"
+    VERSION=""
+elif is_version_number "$ARG1"; then
+    VERSION=$ARG1
+    RELEASE_TYPE=${ARG2:-"patch"}
+else
+    RELEASE_TYPE=$ARG1
+    VERSION=$ARG2
+fi
+
+# Validate release type
+if [[ ! "$RELEASE_TYPE" =~ ^(major|minor|patch)$ ]]; then
+    echo "❌ Error: Invalid release type '$RELEASE_TYPE'. Must be 'major', 'minor', or 'patch'"
+    echo "Usage: $0 [release_type] [version]"
+    echo "       $0 [version] [release_type]"
+    echo "Examples:"
+    echo "  $0 minor              # Auto-detect version, minor release"
+    echo "  $0 1.2.3             # Explicit version, patch release (default)"
+    echo "  $0 minor 1.2.3       # Explicit type and version"
+    echo "  $0 1.2.3 minor      # Version first, then type (also works)"
+    exit 1
+fi
+
+# If version not provided, suggest one based on current version
+if [ -z "$VERSION" ]; then
+    CURRENT_VERSION=$(get_current_version)
+    if [ $? -eq 0 ] && [ -n "$CURRENT_VERSION" ]; then
+        SUGGESTED_VERSION=$(increment_version "$CURRENT_VERSION" "$RELEASE_TYPE")
+        if [ $? -eq 0 ]; then
+            echo "📋 Current version detected: v$CURRENT_VERSION"
+            echo "💡 Suggested next version (${RELEASE_TYPE}): v$SUGGESTED_VERSION"
+            echo ""
+            read -p "Use suggested version v$SUGGESTED_VERSION? (Y/n): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Nn]$ ]]; then
+                echo "❌ Error: Version required"
+                echo "Usage: $0 [release_type] [version]"
+                exit 1
+            else
+                VERSION=$SUGGESTED_VERSION
+                echo "✅ Using suggested version: v$VERSION"
+            fi
+        else
+            echo "❌ Error: Failed to calculate suggested version"
+            exit 1
+        fi
+    else
+        echo "❌ Error: Version required and could not detect current version"
+        echo "Usage: $0 [release_type] [version]"
+        echo ""
+        echo "Could not find version using method: $VERSION_EXTRACTION_METHOD"
+        exit 1
+    fi
+fi
+
+echo "🚀 Starting release process for v$VERSION ($RELEASE_TYPE)"
+
+# Run validation steps
+validate_project_regeneration
+validate_tests
+validate_git_state
+validate_git_branch
+validate_documentation
+validate_release_notes
+validate_github
+
+# Check if any errors were found
+if [ $ERRORS_FOUND -gt 0 ]; then
+    echo ""
+    echo "❌ RELEASE CHECKS FAILED!"
+    echo ""
+    echo "Found $ERRORS_FOUND error(s) that need to be fixed:"
+    echo -e "$ERROR_MESSAGES"
+    echo ""
+    echo "Please fix all errors and run the release script again."
+    exit 1
+fi
+
+echo ""
+echo "🎉 All release checks passed!"
+echo ""
+echo "📋 Release Checklist Complete:"
+[ -n "$PROJECT_REGENERATE_CMD" ] && echo "✅ Project regenerated"
+[ -n "$TEST_CMD" ] && echo "✅ Tests passed"
+[ "$REQUIRE_CLEAN_GIT" = "true" ] && echo "✅ Git repository is clean"
+[ "$REQUIRE_MAIN_BRANCH" = "true" ] && echo "✅ On $MAIN_BRANCH_NAME branch"
+echo "✅ Documentation files validated"
+[ -n "$RELEASE_NOTES_FILE" ] || [ -n "$RELEASE_NOTES_DIR" ] && echo "✅ Release notes validated"
+[ "$ENABLE_GITHUB_CHECKS" = "true" ] && echo "✅ GitHub checks passed"
+echo ""
+echo "🚀 Ready for tagging and release."
+
+# Auto-tag option
+if [ "$AUTO_TAG" = "true" ]; then
+    echo "🏷️  Creating and pushing tag v$VERSION..."
+    git tag -a "v$VERSION" -m "Release v$VERSION"
+    git push "$GIT_REMOTE" "v$VERSION"
+    git push "$GIT_REMOTE" "$MAIN_BRANCH_NAME"
+    echo ""
+    echo "🎉 Release v$VERSION completed successfully!"
+else
+    read -p "🚀 Create and push tag v$VERSION? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "🏷️  Creating and pushing tag v$VERSION..."
+        git tag -a "v$VERSION" -m "Release v$VERSION"
+        git push "$GIT_REMOTE" "v$VERSION"
+        git push "$GIT_REMOTE" "$MAIN_BRANCH_NAME"
+        echo ""
+        echo "🎉 Release v$VERSION completed successfully!"
+    else
+        echo "🚀 Ready to create release tag v$VERSION"
+        echo ""
+        echo "Manual steps:"
+        echo "1. git tag -a v$VERSION -m \"Release v$VERSION\""
+        echo "2. git push $GIT_REMOTE v$VERSION"
+        echo "3. git push $GIT_REMOTE $MAIN_BRANCH_NAME"
+    fi
+fi
+
+echo ""
+echo "Release process complete! ✅"
+
+
+
+
+
+
+
+
+
+
+

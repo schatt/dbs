@@ -403,15 +403,44 @@ sub generate_node_key {
 sub get_or_create_node {
     my ($name, $args, $parent_key, $parent_node, $relationship, $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, $instance_spec, $dedupe_nodes) = @_;
     
-    # Look up existing node by name and args first - but only when deduplication is enabled
-    # Regular tasks should be allowed to exist in multiple parent contexts
-    my $existing_node;
-    if ($dedupe_nodes) {
-        $existing_node = $registry->get_node_by_name_and_args($name, $args);
-        if ($existing_node) {
-            log_debug("Found existing deduplicated node: $name");
-            return $existing_node;
+    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+        my $dedupe_str = defined($dedupe_nodes) ? ($dedupe_nodes ? "YES (deduplicate)" : "NO (no deduplication)") : "undef (no deduplication)";
+        log_debug("get_or_create_node: name=$name, relationship=$relationship, dedupe_nodes=$dedupe_str");
+    }
+    
+    # Look up existing node by name and args first
+    # When dedupe_nodes=1: Always check for existing node (for dependencies/notifications)
+    # When dedupe_nodes=undef: Also check for existing node to allow notifications to dedupe to explicit targets
+    # This allows a notification target to reuse an explicit target node, and vice versa
+    my $existing_node = $registry->get_node_by_name_and_args($name, $args);
+    if ($existing_node) {
+        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+            log_debug("Found existing node: $name (key: " . $existing_node->key . ", requested dedupe_nodes=" . (defined($dedupe_nodes) ? $dedupe_nodes : "undef") . ")");
         }
+        
+        # If the existing node has a different key variant, register it under the requested key as well
+        # This allows the node to be found by both key variants
+        # Generate the requested key the same way get_node_by_name_and_args does
+        my @key_parts = ($name);
+        if ($args && ref($args) eq 'HASH' && %$args) {
+            my @arg_parts;
+            for my $arg_key (sort keys %$args) {
+                my $arg_value = $args->{$arg_key};
+                push @arg_parts, "$arg_key=$arg_value";
+            }
+            push @key_parts, join(',', @arg_parts) if @arg_parts;
+        }
+        my $base_key = join('|', @key_parts);
+        my $requested_key = $dedupe_nodes ? "$base_key|dep" : $base_key;
+        
+        if ($existing_node->key ne $requested_key) {
+            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                log_debug("  Registering existing node under alternate key: $requested_key (existing key: " . $existing_node->key . ")");
+            }
+            $registry->add_node_with_key($requested_key, $existing_node);
+        }
+        
+        return $existing_node;
     }
     
     # Load the config entry to create new node
@@ -423,14 +452,28 @@ sub get_or_create_node {
     
     # Create a new node
     log_debug("Creating new node: $name");
+    # Generate canonical key from name and args (same way registry does it)
+    my @key_parts = ($name);
+    if (%merged_args) {
+        my @arg_parts;
+        for my $arg_key (sort keys %merged_args) {
+            my $arg_value = $merged_args{$arg_key};
+            push @arg_parts, "$arg_key=$arg_value";
+        }
+        push @key_parts, join(',', @arg_parts) if @arg_parts;
+    }
+    my $base_key = join('|', @key_parts);
     # Add "dep" flag to canonical key for deduplicated nodes to enable deduplication
-    my $canonical_key = $dedupe_nodes ? "$name|dep" : $name;
+    my $canonical_key = $dedupe_nodes ? "$base_key|dep" : $base_key;
+    if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+        log_debug("  canonical_key will be: $canonical_key (dedupe_nodes=" . (defined($dedupe_nodes) ? $dedupe_nodes : "undef") . ")");
+    }
     my $node = build_and_register_node($entry, \%merged_args, $registry, $task_by_name, $platform_by_name, $group_by_name, $canonical_key, $dedupe_nodes);
     return undef unless $node;
     
     # Add new node to worklist for processing
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
-        log_debug("Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ")");
+        log_debug("Adding to worklist: " . $node->name . " (type: " . ($node->type // 'unknown') . ", key: " . $node->key . ")");
     }
     
     
@@ -1296,6 +1339,15 @@ sub _print_tree_traversal {
     my $show_notifications = $opts->{show_notifications} // 0;
     my %seen;
     
+    # Helper to get registry from all_nodes if it's a registry object
+    my $registry;
+    if (ref($all_nodes) && UNIVERSAL::can($all_nodes, 'has_node')) {
+        $registry = $all_nodes;
+    } elsif (ref($all_nodes) eq 'HASH') {
+        # If it's a hash, we can't look up nodes by key easily, but we can still traverse
+        $registry = undef;
+    }
+    
     my $print_tree;
     $print_tree = sub {
         my ($node, $prefix, $parent) = @_;
@@ -1311,7 +1363,8 @@ sub _print_tree_traversal {
         my $label = format_node($node, 'default');
         my @dep_lines;
         
-        # Explicit dependencies
+        # Explicit dependencies - now we'll show them as nodes, not just annotations
+        # But we still show them as annotations for reference
         if ($node->can('dependencies') && $node->dependencies && @{ $node->dependencies }) {
             for my $dep (@{ $node->dependencies }) {
                 unless (ref($dep) && UNIVERSAL::can($dep, 'name')) {
@@ -1369,17 +1422,67 @@ sub _print_tree_traversal {
         print $prefix . $label . "\n";
         print "$_\n" for @dep_lines;
         
+        # First, traverse children (including dependency groups) - sorted by child_order
         unless ($node->is_leaf) {
             # Filter out empty dependency groups before iterating
             my @filtered_children = grep { 
                 ref($_) && UNIVERSAL::can($_, 'name') && !is_empty_dependency_group($_)
             } @{ $node->children };
-            for my $child (@filtered_children) {
-                        unless (ref($child) && UNIVERSAL::can($child, 'name')) {
-            log_warn("print_enhanced_tree: Node '" . $node->name . "' has non-BuildNode child. Type: " . (ref($child) || 'SCALAR') . ", Value: $child. Skipping.");
-            next;
-        }
+            
+            # Sort children by child_order (dependency groups have child_order=0, regular children have child_order>=1)
+            my @sorted_children = sort { 
+                my $order_a = $a->can('get_child_order') ? ($a->get_child_order($node) // 999) : 999;
+                my $order_b = $b->can('get_child_order') ? ($b->get_child_order($node) // 999) : 999;
+                $order_a <=> $order_b;
+            } @filtered_children;
+            
+            for my $child (@sorted_children) {
+                unless (ref($child) && UNIVERSAL::can($child, 'name')) {
+                    log_warn("print_enhanced_tree: Node '" . $node->name . "' has non-BuildNode child. Type: " . (ref($child) || 'SCALAR') . ", Value: $child. Skipping.");
+                    next;
+                }
                 $print_tree->($child, $prefix . "  ", $node);
+            }
+        }
+        
+        # Then, traverse dependencies that haven't been shown yet
+        # This ensures dependencies appear as nodes, not just as annotations
+        if ($node->can('dependencies') && $node->dependencies && @{ $node->dependencies }) {
+            for my $dep (@{ $node->dependencies }) {
+                unless (ref($dep) && UNIVERSAL::can($dep, 'name')) {
+                    next;
+                }
+                my $dep_key = get_key_from_node($dep);
+                
+                # Skip if already shown
+                next if $seen{$dep_key};
+                
+                # Find the dependency's dependency group parent if it exists
+                my $dep_group_parent = undef;
+                if ($dep->can('parents') && $dep->parents && @{ $dep->parents }) {
+                    # Look for a dependency group parent (name ends with _dependency_group)
+                    for my $parent (@{ $dep->parents }) {
+                        if (ref($parent) && $parent->can('is_dependency_group') && $parent->is_dependency_group) {
+                            $dep_group_parent = $parent;
+                            last;
+                        }
+                    }
+                }
+                
+                # If dependency has a dependency group parent, show the parent first (if not already shown)
+                # The dependency group will then show the dependency as its child
+                if ($dep_group_parent) {
+                    my $dep_group_key = get_key_from_node($dep_group_parent);
+                    unless ($seen{$dep_group_key}) {
+                        # Show the dependency group parent - it will recursively show the dependency as its child
+                        $print_tree->($dep_group_parent, $prefix . "  ", $node);
+                    }
+                    # Note: We don't show the dependency directly here because it will be shown
+                    # as a child of the dependency group when we traverse the dependency group
+                } else {
+                    # No dependency group parent, show the dependency directly
+                    $print_tree->($dep, $prefix . "  ", $node);
+                }
             }
         }
     };
@@ -1959,17 +2062,21 @@ sub build_graph_with_worklist {
                         # Create/find the child node (single call, no recursion)
                         if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
                             log_debug("Processing child '$child_name' with parent '" . $node->name . "' (child_order: $child_order, parent: " . $node->name . ")");
+                            log_debug("  get_or_create_node called with dedupe_nodes=undef (explicit target, no deduplication)");
                         }
                         my $child_node = get_or_create_node($child_name, $child_merged_args, $node->key, $node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, \@worklist, $child_instance);
                         
                         if ($child_node) {
+                            if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                                log_debug("  Created/found child node: " . $child_node->name . " with key: " . $child_node->key);
+                            }
                                                     # Special case: if this is a dependency group, set child_order to 0
                         if ($child_node->name =~ /_dependency_group$/) {
-                            $child_node->set_child_order(0);
+                            $child_node->set_child_order(0, $node);
                             # NO increment for dependency groups - they don't count in the sequence
                         } else {
                             # Auto-assign child_order for sequential execution
-                            $child_node->set_child_order($child_order);
+                            $child_node->set_child_order($child_order, $node);
                             # Increment child_order for next regular child
                             $child_order++;
                         }
@@ -1983,6 +2090,13 @@ sub build_graph_with_worklist {
                             log_debug("Child " . $child_node->name . " has " . scalar(@$parents) . " parents: " . join(", ", map { $_->name } @$parents));
                         }
                         process_node_relationships_immediately($node, $child_node, 'child', $registry);
+                        
+                        # Verify parent-child relationship was established
+                        if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
+                            my $parents_after = $child_node->get_clean_parents();
+                            log_debug("  After process_node_relationships_immediately: child " . $child_node->name . " has " . scalar(@$parents_after) . " parents: " . join(", ", map { $_->name } @$parents_after));
+                        }
+                        
                         # Register parent as a completion_notify target for the child
                         $child_node->add_completion_notify_target($node);
                         $node->expect_completion_from($child_node);
@@ -2285,8 +2399,8 @@ sub create_dependency_parent {
     my $dep_group_node = build_and_register_node($dep_group_entry, $args, $registry, $task_by_name, $platform_by_name, $group_by_name, $dep_group_canonical_key);
     return undef unless $dep_group_node;
     
-    # Set child_order to 0 for dependency groups
-    $dep_group_node->set_child_order(0);
+    # Set child_order to 0 for dependency groups (relative to original_node)
+    $dep_group_node->set_child_order(0, $original_node);
     
     # Add dependency group to registry
     if ($BuildUtils::VERBOSITY_LEVEL >= 3) {
@@ -2322,8 +2436,8 @@ sub create_dependency_parent {
         my $child_node = get_or_create_node($child_name, $child_args, $dep_group_node->key, $dep_group_node, 'child', $node_global_defaults, $registry, $task_by_name, $platform_by_name, $group_by_name, $cfg, $global_defaults, $worklist_ref, undef, 1);
         
         if ($child_node) {
-            # Set child_order for the dependency
-            $child_node->set_child_order($child_order);
+            # Set child_order for the dependency (relative to dep_group_node)
+            $child_node->set_child_order($child_order, $dep_group_node);
             
             # Establish parent-child relationship
             process_node_relationships_immediately($dep_group_node, $child_node, 'child', $registry);

@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# Script to create symlinks to DBS scripts for use from other projects
+# Script to install DBS tools globally by creating symlinks
 # This allows the build system to be used from anywhere
 #
 # Usage:
-#   ./create_symlinks.sh [target_directory] [--force]
+#   ./install_dbs_tools.sh [target_directory] [--force]
 #
 # Examples:
-#   ./create_symlinks.sh                    # Creates symlinks in ~/bin
-#   ./create_symlinks.sh /usr/local/bin      # Creates symlinks in /usr/local/bin
-#   ./create_symlinks.sh ~/bin --force      # Non-interactive mode
+#   ./install_dbs_tools.sh                    # Creates symlinks in ~/bin
+#   ./install_dbs_tools.sh /usr/local/bin      # Creates symlinks in /usr/local/bin
+#   ./install_dbs_tools.sh ~/bin --force      # Non-interactive mode
 
 set -e
 
