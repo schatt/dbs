@@ -147,6 +147,25 @@ sub sanitize_log_name {
     return $name;
 }
 
+# --- Redact sensitive values in commands before logging ---
+# WHAT: Removes obvious secret values from command strings in logs/console
+# HOW: Best-effort regex redaction for common secret env vars and flags
+# WHY: Prevent accidental secret leakage into build logs/CI output
+# NOTE: This is not perfect; prefer passing secrets via secure env, not CLI args.
+sub redact_command_for_logs {
+    my $cmd = shift // '';
+
+    # Redact common secret-looking env var assignments (best-effort)
+    for my $key (qw(TOKEN PASSWORD SECRET API_KEY AUTHORIZATION)) {
+        $cmd =~ s/\b\Q$key\E=([^\s'"]+)/$key=<redacted>/gi;
+    }
+
+    # Redact common secret flags, both "--flag value" and "--flag=value"
+    $cmd =~ s/(--(?:token|password|secret|api[-_]?key|authorization|auth)(?:=|\s+))(\S+)/$1<redacted>/gi;
+
+    return $cmd;
+}
+
 # --- Find target suggestions for case-insensitive matching ---
 # WHAT: Searches for targets that match the given name case-insensitively across all target types
 # HOW: Compares the target name against build_groups, tasks, and platforms using case-insensitive matching
@@ -2658,9 +2677,10 @@ sub phase3_actual_execution {
                 # Get node args and expand command
                 my $node_args = $node->get_args || {};
                 my $expanded_cmd = expand_command_args($command, $node_args);
+                my $expanded_cmd_for_logs = redact_command_for_logs($expanded_cmd);
                 
                 log_info("Executing: " . $node->name);
-                log_debug("Executing node " . $node->name . " with expanded command: $expanded_cmd");
+                log_debug("Executing node " . $node->name . " with expanded command: $expanded_cmd_for_logs");
                 
                 # Always log command output to files, then show in terminal based on verbosity
                 my $result;
@@ -2672,18 +2692,21 @@ sub phase3_actual_execution {
                 my $node_name = $node->name;
                 open(my $cmd_log, '>>', $command_log_file) or log_error("Cannot open command log: $!");
                 print $cmd_log "[$timestamp] EXECUTING: $node_name\n";
-                print $cmd_log "[$timestamp] COMMAND: $expanded_cmd\n";
+                print $cmd_log "[$timestamp] COMMAND: $expanded_cmd_for_logs\n";
                 print $cmd_log "[$timestamp] LOG_FILE: $log_file\n";
                 print $cmd_log "-" x 80 . "\n";
                 close($cmd_log);
                 
                 if ($VERBOSITY_LEVEL == 0) {
                     # Quiet mode: redirect all output to log files only
-                    $result = system("$expanded_cmd > $log_file 2>&1");
+                    my $bash_script = "($expanded_cmd) > \"$log_file\" 2>&1";
+                    $result = system("bash", "-c", $bash_script);
                 } else {
                     # Normal/verbose/debug mode: log to file AND show in terminal
-                    # Use bash to properly handle PIPESTATUS for exit code preservation
-                    $result = system("bash -c '($expanded_cmd) 2>&1 | tee $log_file; exit \${PIPESTATUS[0]}'");
+                    # Use bash with pipefail so the pipeline exit code matches the command's exit code.
+                    # This keeps terminal output while preserving the original command's failure status.
+                    my $bash_script = "set -o pipefail; ($expanded_cmd) 2>&1 | tee \"$log_file\"";
+                    $result = system("bash", "-c", $bash_script);
                 }
                 # Log command result to command log
                 open(my $result_log, '>>', $command_log_file) or log_error("Cannot open command log: $!");
@@ -2698,6 +2721,8 @@ sub phase3_actual_execution {
                     close($result_log);
                     $new_status = 'failed';
                     log_error("Node " . $node->name . " failed with exit code: " . ($result >> 8));
+                    log_error("Command: $expanded_cmd_for_logs");
+                    log_error("Log file: $log_file");
                     # Remove failed node from groups_ready queue
                     remove_from_groups_ready($node);
                 }
