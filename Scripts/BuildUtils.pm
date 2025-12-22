@@ -1398,23 +1398,25 @@ sub _print_tree_traversal {
             if ($node->can('get_notifies') && @{ $node->get_notifies }) {
                 for my $notify (@{ $node->get_notifies }) {
                     my $notify_label = BuildNode::get_notification_target_name($notify);
-                push @dep_lines, $prefix . "  ├─[notify] notifies: $notify_label";
-            }
-        }
-            
-            # Conditional success notifications
-            if ($node->can('get_notifies_on_success') && @{ $node->get_notifies_on_success }) {
-                for my $notify (@{ $node->get_notifies_on_success }) {
-                    my $notify_label = BuildNode::get_notification_target_name($notify);
-                    push @dep_lines, $prefix . "  ├─[notify_on_success] notifies on success: $notify_label";
+                    push @dep_lines, $prefix . "  ├─[notify] notifies: $notify_label";
                 }
             }
             
-            # Conditional failure notifications
+            # Conditional success notifications - show as tree nodes
+            if ($node->can('get_notifies_on_success') && @{ $node->get_notifies_on_success }) {
+                for my $notify (@{ $node->get_notifies_on_success }) {
+                    my $notify_label = BuildNode::get_notification_target_name($notify);
+                    # Show as a conditional tree node
+                    push @dep_lines, $prefix . "  ├─[conditional] → $notify_label (on success)";
+                }
+            }
+            
+            # Conditional failure notifications - show as tree nodes
             if ($node->can('get_notifies_on_failure') && @{ $node->get_notifies_on_failure }) {
                 for my $notify (@{ $node->get_notifies_on_failure }) {
                     my $notify_label = BuildNode::get_notification_target_name($notify);
-                    push @dep_lines, $prefix . "  ├─[notify_on_failure] notifies on failure: $notify_label";
+                    # Show as a conditional tree node
+                    push @dep_lines, $prefix . "  ├─[conditional] → $notify_label (on failure)";
                 }
             }
         }
