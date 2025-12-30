@@ -2789,8 +2789,12 @@ sub phase3_actual_execution {
 
 # --- Build Node Execution Engine (DRY: handles both execution and validation) ---
 sub execute_build_nodes {
-    # Optional parameter: target name (root node name)
-    my $target_name = shift;
+    # Optional parameters: target name (root node name) or root node object
+    my $target_name_or_node = shift;
+    my $root_node = ref($target_name_or_node) && $target_name_or_node->can('name') 
+        ? $target_name_or_node 
+        : undef;
+    my $target_name = $root_node ? $root_node->name : $target_name_or_node;
     
     # Use global execution mode flags
     my $is_dry_run = $IS_DRY_RUN;
@@ -2830,7 +2834,22 @@ sub execute_build_nodes {
     # CRITICAL: Add root node (target) to groups_ready before loop starts
     # This unblocks the entire dependency graph from the start
     if ($target_name) {
-        my $root_node = $REGISTRY->get_node_by_name_and_args($target_name, {});
+        # Use provided root node if available, otherwise look it up
+        unless ($root_node) {
+            # Try lookup with empty args first (for backward compatibility)
+            $root_node = $REGISTRY->get_node_by_name_and_args($target_name, {});
+            # If not found, try to find any node with this name (handles merged args case)
+            unless ($root_node) {
+                # Search all nodes for one with matching name
+                my $all_nodes = $REGISTRY->all_nodes;
+                for my $node (values %$all_nodes) {
+                    if (ref($node) && $node->isa('BuildNode') && $node->name eq $target_name) {
+                        $root_node = $node;
+                        last;
+                    }
+                }
+            }
+        }
         if ($root_node) {
             if ($BuildUtils::VERBOSITY_LEVEL >= 2) {
                 log_debug("execute_build_nodes: Found target root node: " . $root_node->name);
@@ -3833,7 +3852,8 @@ sub main {
         # Registry is already fully populated by build_graph_with_worklist
         
         # Execute the target (single execution path, mode-aware behavior)
-        my ($result, $execution_order_ref, $duration_ref) = execute_build_nodes($current_target);
+        # Pass the root node directly to avoid lookup issues with merged args
+        my ($result, $execution_order_ref, $duration_ref) = execute_build_nodes($root_node);
         
         # Store results
         push @all_results, $result;
