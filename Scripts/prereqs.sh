@@ -47,19 +47,30 @@ install_brew_packages() {
   done
 }
 
-rtk_is_token_killer() {
-  command -v rtk &>/dev/null && rtk gain &>/dev/null
+# Token Killer exposes `rtk init` / `rtk hook`; do not use `rtk gain` before init (needs stats DB).
+rtk_binary_ok() {
+  command -v rtk &>/dev/null && rtk --version &>/dev/null
+}
+
+rtk_is_token_killer_binary() {
+  rtk_binary_ok && rtk init -h &>/dev/null
+}
+
+rtk_cursor_hook_configured() {
+  rtk init -g --agent cursor --show 2>&1 | grep -q 'Cursor hook: registered'
 }
 
 install_rtk() {
-  if rtk_is_token_killer; then
+  if rtk_is_token_killer_binary; then
     echo "[OK] rtk (Rust Token Killer) already installed."
     return
   fi
 
-  if command -v rtk &>/dev/null; then
-    echo "[WARN] 'rtk' is present but 'rtk gain' failed — wrong package (Rust Type Kit?)."
-    echo "[WARN] Uninstall it, then re-run this script."
+  if rtk_binary_ok; then
+    echo "[ERROR] 'rtk' is on PATH but does not look like Rust Token Killer (wrong package?)."
+    echo "[ERROR] Uninstall the wrong rtk, then re-run ./Scripts/prereqs.sh"
+    echo "[ERROR] See https://github.com/rtk-ai/rtk — never use bare 'cargo install rtk'."
+    exit 1
   fi
 
   echo "[INFO] Installing rtk (Rust Token Killer) via Homebrew tap..."
@@ -68,8 +79,8 @@ install_rtk() {
     brew install rtk
   fi
 
-  if ! rtk_is_token_killer; then
-    echo "[ERROR] rtk install did not produce a working 'rtk gain'. See https://github.com/rtk-ai/rtk"
+  if ! rtk_is_token_killer_binary; then
+    echo "[ERROR] rtk install failed or wrong package. See https://github.com/rtk-ai/rtk"
     exit 1
   fi
   echo "[OK] rtk (Rust Token Killer) installed."
@@ -81,13 +92,23 @@ configure_rtk_for_cursor() {
     return
   fi
 
-  if ! rtk_is_token_killer; then
+  if ! rtk_is_token_killer_binary; then
     echo "[ERROR] rtk is not installed; cannot run rtk init."
     exit 1
   fi
 
+  if rtk_cursor_hook_configured; then
+    echo "[OK] RTK Cursor hook already configured (~/.cursor/hooks.json)."
+    return
+  fi
+
   echo "[INFO] Configuring global RTK for Cursor (rtk init -g --agent cursor --auto-patch)..."
   rtk init -g --agent cursor --auto-patch
+
+  if ! rtk_cursor_hook_configured; then
+    echo "[ERROR] rtk init finished but Cursor hook is not registered. Check ~/.cursor/hooks.json"
+    exit 1
+  fi
   echo "[OK] RTK Cursor hook configured (~/.cursor/hooks.json)."
 }
 
