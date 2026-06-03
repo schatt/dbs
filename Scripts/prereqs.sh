@@ -75,6 +75,22 @@ install_rtk() {
   echo "[OK] rtk (Rust Token Killer) installed."
 }
 
+configure_rtk_for_cursor() {
+  if [[ -n "${CI:-}" ]]; then
+    echo "[INFO] CI environment; skipping rtk init (global Cursor hooks)."
+    return
+  fi
+
+  if ! rtk_is_token_killer; then
+    echo "[ERROR] rtk is not installed; cannot run rtk init."
+    exit 1
+  fi
+
+  echo "[INFO] Configuring global RTK for Cursor (rtk init -g --agent cursor --auto-patch)..."
+  rtk init -g --agent cursor --auto-patch
+  echo "[OK] RTK Cursor hook configured (~/.cursor/hooks.json)."
+}
+
 PERL_MODULES=(
   "YAML::XS"
   "JSON"
@@ -143,6 +159,7 @@ main() {
   require_brew
   install_brew_packages
   install_rtk
+  configure_rtk_for_cursor
   ensure_perl_modules
   install_pre_commit_hooks
   ensure_agent_worktree_root
