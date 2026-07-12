@@ -166,12 +166,22 @@ install_pre_commit_hooks() {
 }
 
 ensure_agent_worktree_root() {
-  local wip_root="${CM_WIP_ROOT:-$HOME/code/github/cm-wip}"
-  if [[ -d "$wip_root" ]]; then
-    echo "[OK] Agent worktree root exists: $wip_root"
+  local repo_root worktree_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  if [[ -n "${CM_WIP_ROOT:-}" ]]; then
+    echo "[ERROR] CM_WIP_ROOT is retired (was ~/code/github/cm-wip). Unset it; worktrees live under ~/code/github/cm/."
+    exit 1
+  fi
+  worktree_root="${CM_WORKTREE_ROOT:-$(dirname "$repo_root")}"
+  if [[ "$worktree_root" == *cm-wip* ]]; then
+    echo "[ERROR] CM_WORKTREE_ROOT must not point at cm-wip (retired). Use ~/code/github/cm/."
+    exit 1
+  fi
+  if [[ -d "$worktree_root" ]]; then
+    echo "[OK] Agent worktree root exists: $worktree_root"
   else
-    mkdir -p "$wip_root"
-    echo "[OK] Created agent worktree root: $wip_root"
+    mkdir -p "$worktree_root"
+    echo "[OK] Created agent worktree root: $worktree_root"
   fi
   echo "[INFO] Add issue worktrees with: Scripts/issue_worktree.sh add <issue> <slug>"
 }
