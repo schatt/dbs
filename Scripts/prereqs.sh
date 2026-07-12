@@ -165,56 +165,6 @@ install_pre_commit_hooks() {
   echo "[OK] pre-commit hooks installed."
 }
 
-ensure_agent_worktree_root() {
-  local repo_root worktree_root
-  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-  if [[ -n "${CM_WIP_ROOT:-}" ]]; then
-    echo "[ERROR] CM_WIP_ROOT is retired (was ~/code/github/cm-wip). Unset it; worktrees live under ~/code/github/cm/."
-    exit 1
-  fi
-  worktree_root="${CM_WORKTREE_ROOT:-$(dirname "$repo_root")}"
-  if [[ "$worktree_root" == *cm-wip* ]]; then
-    echo "[ERROR] CM_WORKTREE_ROOT must not point at cm-wip (retired). Use ~/code/github/cm/."
-    exit 1
-  fi
-  if [[ -d "$worktree_root" ]]; then
-    echo "[OK] Agent worktree root exists: $worktree_root"
-  else
-    mkdir -p "$worktree_root"
-    echo "[OK] Created agent worktree root: $worktree_root"
-  fi
-  echo "[INFO] Add issue worktrees with: Scripts/issue_worktree.sh add <issue> <slug>"
-}
-ensure_cursor_workspace_link() {
-  local repo_root worktree_root integration link target
-  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-  worktree_root="${CM_WORKTREE_ROOT:-$(dirname "$repo_root")}"
-  integration="${worktree_root}/CarManager"
-  link="${worktree_root}/.cursor"
-  target="CarManager/.cursor"
-
-  if [[ ! -f "${integration}/.cursor/hooks/git-prevent-multi-file-dirty.sh" ]]; then
-    return 0
-  fi
-
-  chmod +x "${integration}/.cursor/hooks/"*.sh 2>/dev/null || true
-
-  if [[ -L "$link" ]]; then
-    if [[ "$(readlink "$link")" == "$target" ]]; then
-      echo "[OK] Cursor workspace .cursor already linked: ${link} -> ${target}"
-      return 0
-    fi
-    rm "$link"
-  elif [[ -e "$link" ]]; then
-    echo "[WARN] Replacing ${link} with symlink to ${target}"
-    rm -rf "$link"
-  fi
-
-  ln -s "$target" "$link"
-  echo "[OK] Cursor workspace .cursor linked: ${link} -> ${target}"
-}
-
-
 main() {
   require_brew
   install_brew_packages
@@ -222,8 +172,6 @@ main() {
   configure_rtk_for_cursor
   ensure_perl_modules
   install_pre_commit_hooks
-  ensure_agent_worktree_root
-  ensure_cursor_workspace_link
   echo "[INFO] All prerequisites are installed."
 }
 
